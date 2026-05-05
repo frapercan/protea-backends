@@ -24,9 +24,21 @@ classifiers = [
 python = ">=3.12,<4.0"
 "protea-contracts" = { path = "../protea-contracts", develop = true }
 numpy = ">=1.24"
-# Heavy ML deps (torch, transformers, sentencepiece) become extras
-# in F2A so callers can install only the backend(s) they need.
-# Bootstrap: keep them out for fast install in CI.
+# Heavy ML deps live as extras: callers install only the backend they
+# need. The plugin __init__ modules are deliberately import-cheap (no
+# torch / transformers / esm imports at top level) so unit-test CI
+# stays fast without any extras installed.
+torch = { version = ">=2.1", optional = true }
+transformers = { version = ">=4.40", optional = true }
+sentencepiece = { version = ">=0.2", optional = true }
+esm = { version = ">=3.1", optional = true }
+
+[tool.poetry.extras]
+esm = ["torch", "transformers"]
+t5 = ["torch", "transformers", "sentencepiece"]
+ankh = ["torch", "transformers", "sentencepiece"]
+esm3c = ["torch", "esm"]
+all = ["torch", "transformers", "sentencepiece", "esm"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7"
