@@ -1,0 +1,58 @@
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "protea-backends"
+version = "0.0.1"
+description = "Protein language model embedding backends for the PROTEA stack: ESM family, T5/ProtT5, Ankh, ESM-C."
+authors = ["Francisco Miguel Pérez Canales <frapercan1@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [{ include = "protea_backends", from = "src" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.13"
+"protea-contracts" = { path = "../protea-contracts", develop = true }
+numpy = ">=1.24"
+# Heavy ML deps (torch, transformers, sentencepiece) become extras
+# in F2A so callers can install only the backend(s) they need.
+# Bootstrap: keep them out for fast install in CI.
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7"
+pytest-cov = ">=4"
+ruff = ">=0.1"
+mypy = ">=1.7"
+
+[tool.poetry.plugins."protea.backends"]
+esm = "protea_backends.esm:plugin"
+t5 = "protea_backends.t5:plugin"
+ankh = "protea_backends.ankh:plugin"
+esm3c = "protea_backends.esm3c:plugin"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
