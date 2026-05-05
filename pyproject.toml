@@ -54,11 +54,18 @@ strict = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-# Heavy ML deps (torch, transformers) are imported lazily inside the
-# backend methods. Their stubs are not installed in the protea-backends
-# venv to keep CI light; the runtime install path (pip install
-# protea-backends[esm]) brings them in.
-module = ["torch", "torch.*", "transformers", "transformers.*"]
+# Heavy ML deps (torch, transformers, esm) are imported lazily inside
+# the backend methods. Their stubs are not installed in the
+# protea-backends venv to keep CI light; the runtime install path
+# (pip install protea-backends[esm|t5|ankh|esm3c]) brings them in.
+module = [
+    "torch",
+    "torch.*",
+    "transformers",
+    "transformers.*",
+    "esm",
+    "esm.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
