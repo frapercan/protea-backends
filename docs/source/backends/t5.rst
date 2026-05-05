@@ -1,0 +1,36 @@
+T5 (``t5``)
+===========
+
+The ``t5`` plugin wraps encoder-only T5 checkpoints from the
+ProtTrans family. It also handles ProstT5, which is structurally a
+T5 encoder but expects an explicit ``<AA2fold>`` direction prefix
+when embedding sequences in amino-acid space.
+
+:Models supported: ProtT5-XL (``Rostlab/prot_t5_xl_uniref50``),
+                   ProstT5 (``Rostlab/ProstT5``).
+:Extra: ``protea-backends[t5]``
+:Heavy deps: ``torch``, ``transformers``, ``sentencepiece``
+:Numerical type: fp16 on CUDA, fp32 on CPU.
+:Pooling: mean over residues; ``EOS`` token and ProstT5 prefix tokens
+          excluded.
+
+Quirks and operational notes
+----------------------------
+
+- **U / Z / O / B** residues are normalised to ``X`` before
+  tokenisation so the SentencePiece tokenizer does not split them
+  into multiple sub-tokens.
+- **ProstT5 detection** is automatic from
+  ``model.config.name_or_path``: when the path contains ``ProstT5``,
+  the plugin prepends the ``<AA2fold>`` prefix and strips the prefix
+  tokens before pooling.
+- The tokenizer is loaded with ``do_lower_case=False``, since the
+  amino-acid alphabet is uppercase by convention.
+
+API reference
+-------------
+
+.. automodule:: protea_backends.t5
+   :members:
+   :show-inheritance:
+   :member-order: bysource

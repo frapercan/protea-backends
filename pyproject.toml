@@ -46,6 +46,15 @@ pytest-cov = ">=4"
 ruff = ">=0.1"
 mypy = ">=1.7"
 
+[tool.poetry.group.docs]
+optional = true
+
+[tool.poetry.group.docs.dependencies]
+sphinx = ">=7.3"
+shibuya = ">=2024.10"
+sphinx-copybutton = ">=0.5"
+sphinx-design = ">=0.5"
+
 [tool.poetry.plugins."protea.backends"]
 esm = "protea_backends.esm:plugin"
 t5 = "protea_backends.t5:plugin"
