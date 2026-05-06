@@ -1,48 +1,116 @@
 # protea-backends
 
-Protein language model embedding backends for the PROTEA stack.
-Each sub-module implements the `EmbeddingBackend` ABC from
-`protea-contracts` and registers via `entry_points` group
-`protea.backends`.
+Protein language model embedding backends for the
+[PROTEA](https://github.com/frapercan/protea) stack. Each sub-module
+implements the `EmbeddingBackend` ABC from
+[`protea-contracts`](https://github.com/frapercan/protea-contracts)
+and registers itself via the `protea.backends` `entry_points` group,
+so a deployment can ship only the backend it actually needs.
 
-## Sub-modules
+## 5 minutes to your first embedding
 
-| Sub-module | Models | Status |
-|------------|--------|--------|
-| `protea_backends.esm` | ESM-1b, ESM-2 (8M / 35M / 150M / 650M / 3B / 15B) | F2A.1 (placeholder) |
-| `protea_backends.t5` | ProtT5-XL, ProstT5 | F2A.2 (placeholder) |
-| `protea_backends.ankh` | Ankh-base, Ankh-large | F2A.3 (placeholder) |
-| `protea_backends.esm3c` | ESM-C 300M, ESM-C 600M | F2A.4 (placeholder) |
+Install the package with the extra for the backend you want
+(`esm` here, but `t5`, `ankh`, `esm3c` follow the same pattern):
 
-## Heavy deps as extras
+```bash
+pip install "protea-backends[esm]"
+```
 
-`torch`, `transformers`, `sentencepiece` will become poetry extras
-keyed per backend (`pip install protea-backends[esm]`) so HPC
-deployments can pull only what they need. Today the bootstrap
-keeps them out for fast CI install.
+Discover and call the plugin:
+
+```python
+from importlib.metadata import entry_points
+import numpy as np
+
+# Resolve the plugin instance via its entry point name.
+plugin = entry_points(group="protea.backends")["esm"].load()
+assert plugin.name == "esm"
+
+# Ignore the structured-event callback for this example.
+emit = lambda *a, **k: None
+
+# Load the model on CPU. The plugin is import-cheap; torch is
+# imported lazily inside load_model only.
+model, tokenizer = plugin.load_model(
+    "facebook/esm2_t6_8M_UR50D", "cpu", emit
+)
+
+# Embed a batch. Returns a (B, D) float16 ndarray.
+embeddings = plugin.embed_batch(
+    model, tokenizer, ["MSEQ", "MKTYV"], emit=emit
+)
+print(embeddings.shape, embeddings.dtype)  # (2, 320) float16
+```
+
+`protea-core` does the same dance internally: it discovers all four
+backends at startup and dispatches `compute_embeddings` jobs by
+plugin name (`esm`, `t5`, `ankh`, `esm3c`).
+
+## Backends shipped today
+
+| Plugin | Models | Extra | Notes |
+|--------|--------|-------|-------|
+| `esm` | ESM-1b, ESM-2 (8M to 15B) | `[esm]` | HuggingFace `EsmModel`; mean-pool last hidden state |
+| `t5` | ProtT5-XL, ProstT5 | `[t5]` | Encoder-only T5; ProstT5 auto-detected, prefixed with `<AA2fold>` |
+| `ankh` | Ankh-base, Ankh-large | `[ankh]` | bfloat16 on CUDA (FP16 LayerNorm overflows); `is_split_into_words=True` for SentencePiece |
+| `esm3c` | ESM-C 300M, ESM-C 600M | `[esm3c]` | Standalone `esm` package; no tokenizer; `model.encode` + `LogitsConfig(return_hidden_states=True)` |
+
+Install everything at once with `pip install "protea-backends[all]"`.
+
+## Why a separate package
+
+Three reasons (master plan v3, [ADR D1](../PROTEA/docs/source/adr/D01-project-structure.rst)):
+
+1. **Plugin extensibility.** New backends are added without touching
+   `protea-core`. A single-file commit in this repository plus one
+   line in `pyproject.toml` is enough.
+2. **Per-backend deps.** Heavy ML libraries (`torch`,
+   `transformers`, `sentencepiece`, `esm`) live behind Poetry extras.
+   A deployment that only needs ESM-2 does not pull `esm`'s 1.3 GB
+   wheel.
+3. **Discovery is import-cheap.** Each plugin module imports nothing
+   heavy at top level; `torch` and friends are imported lazily inside
+   `load_model` and `embed_batch`. `protea-core` startup pays no cost
+   for backends it never invokes.
 
 ## Adding a new backend
 
-A new backend = a new sub-module + an entry under
-`[tool.poetry.plugins."protea.backends"]` in `pyproject.toml`.
-`protea-core` discovers it via `entry_points` and registers it
-in `compute_embeddings`.
+The full guide lives in the Sphinx docs under
+`docs/source/contributing.rst`. The five-step summary:
 
-The masterplan demonstrates this with the *adding-a-PLM* test
-in F2: a single-file commit must be enough to add a new backend.
-
-## Roadmap
-
-This is the F0 bootstrap (T0.14 of the PROTEA master plan v3).
-The current `_embed_esm`, `_embed_t5`, `_embed_ankh`, `_embed_esm3c`
-helpers in `protea-core/operations/compute_embeddings.py` migrate
-here in F2A.1-F2A.4.
+1. Create `src/protea_backends/<your_name>/__init__.py`.
+2. Subclass `EmbeddingBackend` and implement `load_model` +
+   `embed_batch`. Set `name = "<your_name>"`.
+3. Add `<your_name> = "protea_backends.<your_name>:plugin"` under
+   `[tool.poetry.plugins."protea.backends"]` in `pyproject.toml`.
+4. Declare any new heavy dependency as `optional = true` and add it
+   to a new extras group `[your_name]`.
+5. Mirror the existing test files (`tests/test_<your_name>.py`)
+   covering instance type, ABC compliance, name attribute,
+   discoverability, and method signatures.
 
 ## Development
 
 ```bash
 poetry install
-poetry run pytest
+poetry run pytest             # 24 tests, ~0.2s
 poetry run ruff check .
 poetry run mypy src tests
+
+# Build the docs (optional group, opt in):
+poetry install --with docs
+cd docs && make html
+open build/html/index.html
 ```
+
+## Documentation
+
+Full Sphinx documentation in `docs/source/`. Build locally with the
+commands above. Each backend has its own page documenting models
+supported, the extra to install, heavy dependencies, numerical type,
+pooling rule, and plugin-specific quirks (Ankh's bfloat16 requirement,
+ProstT5's prefix detection, ESM-C's tokenizer-less API).
+
+## License
+
+MIT. See `LICENSE`.
