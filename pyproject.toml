@@ -22,7 +22,7 @@ classifiers = [
 
 [tool.poetry.dependencies]
 python = ">=3.12,<4.0"
-"protea-contracts" = { path = "../protea-contracts", develop = true }
+"protea-contracts" = { git = "https://github.com/frapercan/protea-contracts.git", branch = "master" }
 numpy = ">=1.24"
 # Heavy ML deps live as extras: callers install only the backend they
 # need. The plugin __init__ modules are deliberately import-cheap (no
