@@ -17,7 +17,7 @@ copyright = "2026, Francisco Miguel Pérez Canales"
 
 try:
     release = _pkg_version("protea-backends")
-except Exception:  # noqa: BLE001  -- fallback when not installed
+except Exception:
     release = "0.0.1"
 version = release
 
