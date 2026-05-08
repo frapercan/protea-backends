@@ -24,7 +24,7 @@ Example::
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from protea_contracts import EmbeddingBackend
@@ -138,7 +138,7 @@ class EsmBackend(EmbeddingBackend):
             {"n_sequences": len(sequences)},
             "info",
         )
-        return np.stack(out).astype(np.float16)  # type: ignore[no-any-return]
+        return cast("np.ndarray[Any, Any]", np.stack(out).astype(np.float16))
 
 
 #: Module-level plugin instance discovered via the
