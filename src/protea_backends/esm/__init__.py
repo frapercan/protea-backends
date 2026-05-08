@@ -138,7 +138,7 @@ class EsmBackend(EmbeddingBackend):
             {"n_sequences": len(sequences)},
             "info",
         )
-        return np.stack(out).astype(np.float16)
+        return np.stack(out).astype(np.float16)  # type: ignore[no-any-return]
 
 
 #: Module-level plugin instance discovered via the

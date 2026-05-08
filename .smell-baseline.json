@@ -1,0 +1,82 @@
+{
+  "thresholds": {
+    "file_loc": 800,
+    "class_loc": 500,
+    "method_loc": 60,
+    "param_count": 6
+  },
+  "offenders": [
+    {
+      "key": "method::src/protea_backends/ankh/__init__.py::AnkhBackend.embed_batch",
+      "kind": "method",
+      "path": "src/protea_backends/ankh/__init__.py",
+      "name": "AnkhBackend.embed_batch",
+      "line": 90,
+      "metric": 87,
+      "threshold": 60
+    },
+    {
+      "key": "method::src/protea_backends/esm/__init__.py::EsmBackend.embed_batch",
+      "kind": "method",
+      "path": "src/protea_backends/esm/__init__.py",
+      "name": "EsmBackend.embed_batch",
+      "line": 67,
+      "metric": 75,
+      "threshold": 60
+    },
+    {
+      "key": "method::src/protea_backends/esm3c/__init__.py::EsmcBackend.embed_batch",
+      "kind": "method",
+      "path": "src/protea_backends/esm3c/__init__.py",
+      "name": "EsmcBackend.embed_batch",
+      "line": 77,
+      "metric": 93,
+      "threshold": 60
+    },
+    {
+      "key": "method::src/protea_backends/t5/__init__.py::T5Backend.embed_batch",
+      "kind": "method",
+      "path": "src/protea_backends/t5/__init__.py",
+      "name": "T5Backend.embed_batch",
+      "line": 79,
+      "metric": 89,
+      "threshold": 60
+    },
+    {
+      "key": "params::src/protea_backends/ankh/__init__.py::AnkhBackend.embed_batch",
+      "kind": "params",
+      "path": "src/protea_backends/ankh/__init__.py",
+      "name": "AnkhBackend.embed_batch",
+      "line": 90,
+      "metric": 8,
+      "threshold": 6
+    },
+    {
+      "key": "params::src/protea_backends/esm/__init__.py::EsmBackend.embed_batch",
+      "kind": "params",
+      "path": "src/protea_backends/esm/__init__.py",
+      "name": "EsmBackend.embed_batch",
+      "line": 67,
+      "metric": 8,
+      "threshold": 6
+    },
+    {
+      "key": "params::src/protea_backends/esm3c/__init__.py::EsmcBackend.embed_batch",
+      "kind": "params",
+      "path": "src/protea_backends/esm3c/__init__.py",
+      "name": "EsmcBackend.embed_batch",
+      "line": 77,
+      "metric": 8,
+      "threshold": 6
+    },
+    {
+      "key": "params::src/protea_backends/t5/__init__.py::T5Backend.embed_batch",
+      "kind": "params",
+      "path": "src/protea_backends/t5/__init__.py",
+      "name": "T5Backend.embed_batch",
+      "line": 79,
+      "metric": 8,
+      "threshold": 6
+    }
+  ]
+}
