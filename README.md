@@ -103,6 +103,39 @@ cd docs && make html
 open build/html/index.html
 ```
 
+## Contributing
+
+Contributions are welcome from research institutions and individual developers.
+
+**Branch strategy:** all changes target `develop`; `main` tracks stable
+releases only.
+
+```bash
+git clone https://github.com/frapercan/protea-backends.git
+cd protea-backends
+git checkout develop
+git checkout -b feature/my-backend
+
+poetry install
+
+# Implement your backend (see "Adding a new backend" above)
+# Verify locally before opening a PR:
+poetry run pytest
+poetry run ruff check .
+poetry run mypy src tests
+
+# Open a pull request targeting develop
+```
+
+Key constraints:
+- **Import-cheap:** top-level module imports must not trigger `torch` or
+  any heavy ML library. Lazy imports inside `load_model` and `embed_batch`
+  only.
+- **Typed outputs:** `embed_batch` must return a `(B, D) float16 ndarray`.
+  If the upstream model returns another dtype, cast inside the plugin.
+- **No runtime deps on protea-core.** This package must stay installable
+  independently of PROTEA's platform layer.
+
 ## Documentation
 
 Full Sphinx documentation in `docs/source/`. Build locally with the
