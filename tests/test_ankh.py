@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from importlib.metadata import entry_points
 
+import pytest
 from protea_contracts import EmbeddingBackend
 
 from protea_backends.ankh import AnkhBackend, plugin
@@ -32,3 +33,14 @@ def test_plugin_resolvable_via_entry_points() -> None:
 def test_load_model_signature_present() -> None:
     assert callable(plugin.load_model)
     assert callable(plugin.embed_batch)
+
+
+def test_embed_batch_per_residue_raises_not_implemented() -> None:
+    """MIL.1a defers Ankh per-residue wiring to MIL.1b."""
+    with pytest.raises(NotImplementedError, match=r"MIL\.1b"):
+        plugin.embed_batch_per_residue(
+            model=object(),
+            tokenizer=object(),
+            sequences=["MSEQ"],
+            emit=lambda *a, **kw: None,
+        )
