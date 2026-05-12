@@ -21,7 +21,7 @@ Heavy ML deps (``torch``, ``esm``) are imported lazily; install the
 runtime stack with ``pip install protea-backends[esm3c]`` (extras
 land in F2A.5 of master plan v3).
 
-Two output paths:
+Three output paths:
 
 * :meth:`EsmcBackend.embed_batch` returns the historical ``(B, D)``
   mean-pooled ``float16`` matrix.
@@ -30,6 +30,14 @@ Two output paths:
   ``(L_i, D)`` ``float16`` tensors and matching attention masks
   (BOS / EOS already stripped). Wired in MIL.1b alongside T5 and
   Ankh.
+* :meth:`EsmcBackend.embed_chunks` returns one
+  ``list[ChunkEmbedding]`` per sequence and is the bit-exact home of
+  PROTEA's legacy ``_embed_esm3c`` pipeline (T2A.4): multi-layer
+  selection / aggregation, per-residue normalisation, chunking, and
+  ``mean`` / ``max`` / ``mean_max`` / ``cls`` pooling. ``protea-core``
+  dispatches to it from ``compute_embeddings._dispatch_embed``. The
+  ``tokenizer`` argument is accepted for signature parity with the
+  other plugins and is ignored (ESM-C has no tokenizer object).
 
 Example::
 
@@ -53,6 +61,14 @@ from typing import Any, cast
 
 import numpy as np
 from protea_contracts import EmbeddingBackend, EmbeddingPayload
+
+from protea_backends._chunk_helpers import (
+    ChunkEmbedding,
+    aggregate_1d,
+    aggregate_residue_layers,
+    chunk_and_pool,
+    validate_layers,
+)
 
 
 class EsmcBackend(EmbeddingBackend):
@@ -188,6 +204,35 @@ class EsmcBackend(EmbeddingBackend):
             attention_mask=masks,
         )
 
+    def embed_chunks(
+        self,
+        model: Any,
+        tokenizer: Any,
+        sequences: list[str],
+        config: Any,
+        device: str,
+    ) -> list[list[ChunkEmbedding]]:
+        """Embed sequences with ESM-C and return PROTEA's chunked output.
+
+        Bit-exact port of PROTEA's pre-plugin ``_embed_esm3c`` pipeline
+        (T2A.4 of master plan v3.2). Iterates sequence by sequence
+        through ``model.encode`` + ``model.logits`` with
+        ``return_hidden_states=True`` (the ESM SDK does not support
+        batched inference), truncates each sequence to
+        ``config.max_length`` before encoding, and routes the resulting
+        hidden states through the shared ``_chunk_helpers`` pipeline.
+
+        ``tokenizer`` is accepted for signature parity with the other
+        plugins and is ignored (ESM-C has no tokenizer object).
+
+        ``config`` is duck-typed to PROTEA's ``EmbeddingConfig`` (any
+        object with ``model_name``, ``max_length``, ``layer_indices``,
+        ``layer_agg``, ``pooling``, ``normalize``, ``normalize_residues``,
+        ``use_chunking``, ``chunk_size`` and ``chunk_overlap``).
+        """
+        del tokenizer  # ESM-C has no tokenizer.
+        return embed_chunks_esm3c(model, sequences, config, device)
+
     def _compute_residue_tensors(
         self,
         model: Any,
@@ -282,6 +327,90 @@ def _squeeze_layer(layer: Any) -> Any:
     if layer.dim() == 3 and layer.shape[0] == 1:
         return layer[0]
     return layer
+
+
+def embed_chunks_esm3c(
+    model: Any,
+    sequences: list[str],
+    config: Any,
+    device: str,
+) -> list[list[ChunkEmbedding]]:
+    """Module-level chunked pipeline for ESM-C.
+
+    Iterates ``sequences`` and runs the SDK forward pass per sequence,
+    then dispatches to :func:`_embed_chunks_one` for layer selection,
+    residue pooling and chunking. Wrapped in :class:`torch.no_grad` for
+    parity with the legacy PROTEA shim. ``device`` is accepted for
+    signature parity with the other backends; the actual device is read
+    from the loaded model's parameters.
+    """
+    import torch
+
+    device_obj = torch.device(device) if isinstance(device, str) else device
+    results: list[list[ChunkEmbedding]] = []
+    with torch.no_grad():
+        for seq_str in sequences:
+            results.append(_embed_chunks_one(model, seq_str, config, device_obj))
+    return results
+
+
+def _embed_chunks_one(
+    model: Any,
+    seq_str: str,
+    config: Any,
+    device_obj: Any,
+) -> list[ChunkEmbedding]:
+    """Forward pass + pooling for one ESM-C sequence.
+
+    Truncates ``seq_str`` to ``config.max_length`` before encoding,
+    strips BOS (position 0) and EOS (position -1) before residue-level
+    pooling, and applies the same chunk / pool / normalise logic as the
+    legacy ``_embed_esm3c`` shim in PROTEA. CLS pooling reads position
+    0 of each selected layer (before stripping); residue pooling reads
+    positions ``1:-1``.
+    """
+    import torch
+    import torch.nn.functional as F  # noqa: N812  PyTorch convention
+    from esm.sdk.api import ESMProtein, LogitsConfig
+
+    protein = ESMProtein(sequence=seq_str[: config.max_length])
+    with torch.autocast(
+        device_type=device_obj.type,
+        dtype=torch.float16,
+        enabled=(device_obj.type == "cuda"),
+    ):
+        protein_tensor = model.encode(protein)
+        logits_output = model.logits(
+            protein_tensor,
+            LogitsConfig(sequence=True, return_hidden_states=True),
+        )
+
+    hs = logits_output.hidden_states
+    if hs is None:
+        raise RuntimeError(
+            f"ESM3c returned no hidden_states for sequence {seq_str[:20]!r}"
+        )
+    if isinstance(hs, torch.Tensor):
+        hs = [hs[i] for i in range(hs.shape[0])]
+
+    valid_layers = validate_layers(config.layer_indices, hs, "ESM3c", seq_str[:20])
+
+    if config.pooling == "cls":
+        layer_tensors_1d = [hs[-(li + 1)][0, 0, :].float() for li in valid_layers]
+        pooled = aggregate_1d(layer_tensors_1d, config.layer_agg)
+        if config.normalize:
+            pooled = F.normalize(pooled.unsqueeze(0), p=2, dim=1).squeeze(0)
+        chunks = [ChunkEmbedding(0, None, pooled.cpu().numpy())]
+    else:
+        layer_tensors_2d = [hs[-(li + 1)][0, 1:-1, :].float() for li in valid_layers]
+        residues = aggregate_residue_layers(layer_tensors_2d, config.layer_agg)
+        if config.normalize_residues:
+            residues = F.normalize(residues, p=2, dim=1)
+        chunks = chunk_and_pool(residues, config)
+
+    del logits_output, hs
+    torch.cuda.empty_cache()
+    return chunks
 
 
 #: Module-level plugin instance discovered via the
