@@ -7,6 +7,11 @@ implements the `EmbeddingBackend` ABC from
 and registers itself via the `protea.backends` `entry_points` group,
 so a deployment can ship only the backend it actually needs.
 
+**Status:** v0.0.1 (experimental, pre-1.0; API may change across minor releases).
+See the [PROTEA stack architecture](https://github.com/frapercan/PROTEA#repositories-in-the-protea-stack) for where this package fits.
+
+**Entry points exposed:** `protea.backends` group: `esm`, `t5`, `ankh`, `esm3c`.
+
 ## 5 minutes to your first embedding
 
 Install the package with the extra for the backend you want
@@ -161,7 +166,7 @@ Single source of truth: [`docs/source/_data/stack.yaml`](https://github.com/frap
 | [protea-method](https://github.com/frapercan/protea-method) | Inference | `skeleton` | Pure inference path (KNN, feature compute, reranker apply). Target of the F2C extraction. Bind-mounted by the LAFA containers. |
 | [protea-sources](https://github.com/frapercan/protea-sources) | Source plugin | `skeleton` | Annotation source plugins (GOA, QuickGO, UniProt). Discovered via Python entry_points. |
 | [protea-runners](https://github.com/frapercan/protea-runners) | Runner plugin | `skeleton` | Experiment runner plugins (LightGBM lab, KNN baseline, future GNN). Discovered via Python entry_points. |
-| **protea-backends** (this repo) | Backend plugin | `skeleton` | Protein language model embedding backends (ESM family, T5/ProstT5, Ankh, ESM3-C). Discovered via Python entry_points. |
+| **protea-backends** (this repo) | Backend plugin | `active` | Protein language model embedding backends (ESM family, T5/ProstT5, Ankh, ESM3-C). Discovered via Python entry_points. |
 | [protea-reranker-lab](https://github.com/frapercan/protea-reranker-lab) | Lab | `active` | LightGBM reranker training lab. Pulls datasets from PROTEA, trains boosters, publishes them back via /reranker-models/import-by-reference. |
 | [cafaeval-protea](https://github.com/frapercan/cafaeval-protea) | Evaluator | `active` | Standalone fork of cafaeval (CAFA-evaluator-PK) with the PK-coverage fix and a bit-exact parity guarantee against the upstream. |
 
