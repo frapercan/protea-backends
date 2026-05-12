@@ -19,7 +19,7 @@ Heavy ML deps (torch, transformers) are imported lazily inside
 Install runtime stack with ``pip install protea-backends[t5]``
 (extras land in F2A.5 of master plan v3).
 
-Two output paths:
+Three output paths:
 
 * :meth:`T5Backend.embed_batch` returns the historical ``(B, D)``
   mean-pooled ``float16`` matrix.
@@ -28,6 +28,12 @@ Two output paths:
   ``(L_i, D)`` ``float16`` tensors and matching attention masks
   (AA2fold prefix and EOS already stripped). Wired in MIL.1b to
   match the ESM precedent from MIL.1a.
+* :meth:`T5Backend.embed_chunks` returns one
+  ``list[ChunkEmbedding]`` per sequence and is the bit-exact home of
+  PROTEA's legacy ``_embed_t5`` pipeline (T2A.2): multi-layer
+  selection / aggregation, per-residue normalisation, chunking, and
+  ``mean`` / ``max`` / ``mean_max`` / ``cls`` pooling. ``protea-core``
+  dispatches to it from ``compute_embeddings._dispatch_embed``.
 
 Example::
 
@@ -49,10 +55,37 @@ Example::
 from __future__ import annotations
 
 import re
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import numpy as np
 from protea_contracts import EmbeddingBackend, EmbeddingPayload
+
+from protea_backends._chunk_helpers import (
+    ChunkEmbedding,
+    aggregate_1d,
+    aggregate_residue_layers,
+    chunk_and_pool,
+    validate_layers,
+)
+
+
+class T5Mode(NamedTuple):
+    """Tokenisation/prefix mode for :meth:`T5Backend.embed_chunks`.
+
+    ``use_aa2fold=None`` triggers auto-detect from ``config.model_name``
+    (looks for the ``prostt5`` substring, case-insensitive). Sibling
+    backends (Ankh, T2A.3) override with explicit values so they can
+    reuse the chunked pipeline without re-implementing tokenisation.
+    """
+
+    use_aa2fold: bool | None = None
+    split_into_words: bool = False
+
+
+#: Default mode constant used by :meth:`T5Backend.embed_chunks` so the
+#: signature stays the 5-arg shape PROTEA's dispatch expects without
+#: triggering ruff's B008 (no callable default argument).
+_DEFAULT_T5_MODE = T5Mode()
 
 
 class T5Backend(EmbeddingBackend):
@@ -183,6 +216,35 @@ class T5Backend(EmbeddingBackend):
             attention_mask=masks,
         )
 
+    def embed_chunks(
+        self,
+        model: Any,
+        tokenizer: Any,
+        sequences: list[str],
+        config: Any,
+        device: str,
+    ) -> list[list[ChunkEmbedding]]:
+        """Embed sequences with T5EncoderModel and return PROTEA's chunked output.
+
+        Bit-exact port of PROTEA's pre-plugin ``_embed_t5`` pipeline
+        (T2A.2 of master plan v3.2). Sequences are processed as a padded
+        batch; ProstT5 mode is auto-detected from ``config.model_name``
+        (``prostt5`` substring, case-insensitive).
+
+        ``config`` is duck-typed to PROTEA's ``EmbeddingConfig`` (any
+        object with ``model_name``, ``max_length``, ``layer_indices``,
+        ``layer_agg``, ``pooling``, ``normalize``, ``normalize_residues``,
+        ``use_chunking``, ``chunk_size`` and ``chunk_overlap``).
+
+        Sibling backends (Ankh in T2A.3) call the module-level
+        :func:`embed_chunks_with_mode` helper with a custom :class:`T5Mode`
+        to opt out of the AA2fold prefix and switch the tokeniser to the
+        per-residue list form.
+        """
+        return embed_chunks_with_mode(
+            model, tokenizer, sequences, config, device, _DEFAULT_T5_MODE
+        )
+
     def _compute_residue_tensors(
         self,
         model: Any,
@@ -245,6 +307,144 @@ def _pool_residues(residues: Any, pooling: str) -> Any:
     if pooling == "max":
         return residues.max(dim=0).values
     return residues.mean(dim=0)
+
+
+def _t5_tokenise(
+    tokenizer: Any,
+    cleaned: list[str],
+    config: Any,
+    mode: T5Mode,
+    use_aa2fold: bool,
+) -> Any:
+    """Apply the tokeniser branch picked by ``mode.split_into_words``.
+
+    ``use_aa2fold`` is the resolved boolean (auto-detected or explicitly
+    set via ``mode``), used only on the space-joined path.
+    """
+    if mode.split_into_words:
+        # Ankh path: list-of-chars with is_split_into_words=True so the
+        # tokeniser treats each residue as one word and never falls back to <unk>.
+        return tokenizer.batch_encode_plus(
+            [list(c) for c in cleaned],
+            padding="longest",
+            truncation=True,
+            max_length=config.max_length,
+            add_special_tokens=True,
+            is_split_into_words=True,
+            return_tensors="pt",
+        )
+    processed = [("<AA2fold> " if use_aa2fold else "") + " ".join(c) for c in cleaned]
+    return tokenizer.batch_encode_plus(
+        processed,
+        padding="longest",
+        truncation=True,
+        max_length=config.max_length,
+        add_special_tokens=True,
+        return_tensors="pt",
+    )
+
+
+def _t5_forward_pass(model: Any, input_ids: Any, attention_mask: Any) -> Any:
+    """Run a T5 encoder forward pass under ``no_grad``; return ``hidden_states``.
+
+    Frees the ``outputs`` reference and triggers a CUDA cache flush
+    before returning so the caller can reuse the residual GPU memory for
+    the per-sequence pool step.
+    """
+    import torch
+
+    with torch.no_grad():
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+        )
+    hidden_states = outputs.hidden_states  # tuple of (B, L, D)
+    del outputs
+    torch.cuda.empty_cache()
+    return hidden_states
+
+
+def embed_chunks_with_mode(
+    model: Any,
+    tokenizer: Any,
+    sequences: list[str],
+    config: Any,
+    device: str,
+    mode: T5Mode,
+) -> list[list[ChunkEmbedding]]:
+    """T5 chunked pipeline with an explicit tokenisation :class:`T5Mode`.
+
+    Module-level entry point used by :meth:`T5Backend.embed_chunks`
+    (default ``T5Mode()``) and by sibling plugins (Ankh, T2A.3) that
+    need to override the AA2fold prefix and the SentencePiece
+    tokenisation strategy without re-implementing the layer / chunk /
+    pool pipeline.
+    """
+    import torch
+
+    use_aa2fold = (
+        mode.use_aa2fold
+        if mode.use_aa2fold is not None
+        else "prostt5" in config.model_name.lower()
+    )
+    cleaned = [re.sub(r"[UZOB]", "X", seq_str) for seq_str in sequences]
+    inputs = _t5_tokenise(tokenizer, cleaned, config, mode, use_aa2fold)
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+
+    hidden_states = _t5_forward_pass(
+        model, inputs["input_ids"], inputs["attention_mask"]
+    )
+
+    valid_layers = validate_layers(config.layer_indices, hidden_states, "T5", "batch")
+    start_idx = 1 if use_aa2fold else 0  # skip <AA2fold> on ProstT5
+    results: list[list[ChunkEmbedding]] = [
+        _t5_pool_one(
+            i, hidden_states, inputs["attention_mask"], valid_layers, start_idx, config
+        )
+        for i in range(len(sequences))
+    ]
+
+    del hidden_states
+    torch.cuda.empty_cache()
+    return results
+
+
+def _t5_pool_one(
+    seq_idx: int,
+    hidden_states: Any,
+    attention_mask: Any,
+    valid_layers: list[int],
+    start_idx: int,
+    config: Any,
+) -> list[ChunkEmbedding]:
+    """Pool one batched sequence's hidden states into ``ChunkEmbedding`` rows.
+
+    Two pooling paths:
+
+    * ``cls``: position 0 (``<AA2fold>`` on ProstT5, otherwise first AA).
+    * residue: strip prefix (``start_idx``) and trailing EOS so residues
+      start at AA 0 and ``residues.shape[0]`` equals the amino-acid count.
+    """
+    import torch.nn.functional as F  # noqa: N812  PyTorch convention
+
+    actual_len = int(attention_mask[seq_idx].sum().item())
+    if config.pooling == "cls":
+        layer_tensors_1d = [
+            hidden_states[-(li + 1)][seq_idx, 0, :].float() for li in valid_layers
+        ]
+        pooled = aggregate_1d(layer_tensors_1d, config.layer_agg)
+        if config.normalize:
+            pooled = F.normalize(pooled.unsqueeze(0), p=2, dim=1).squeeze(0)
+        return [ChunkEmbedding(0, None, pooled.cpu().numpy())]
+    layer_tensors_2d = [
+        hidden_states[-(li + 1)][seq_idx, start_idx : actual_len - 1, :].float()
+        for li in valid_layers
+    ]
+    residues = aggregate_residue_layers(layer_tensors_2d, config.layer_agg)
+    if config.normalize_residues:
+        residues = F.normalize(residues, p=2, dim=1)
+    return chunk_and_pool(residues, config)
 
 
 def _aggregate_layers(
