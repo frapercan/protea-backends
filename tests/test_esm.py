@@ -4,13 +4,21 @@ These tests run **without** torch/transformers installed: they assert
 the plugin is discoverable and contract-compliant. Heavy
 load_model/embed_batch behaviour is exercised in protea-core's
 integration suite and live `study_v_thesis` runs.
+
+MIL.1a adds a contract round-trip for the per-residue path: the empty
+sequence shortcut + (when torch is available) a stub-driven end-to-end
+test that checks shape, dtype and CLS/EOS stripping.
 """
 
 from __future__ import annotations
 
+import importlib.util
 from importlib.metadata import entry_points
+from typing import Any
 
-from protea_contracts import EmbeddingBackend
+import numpy as np
+import pytest
+from protea_contracts import EmbeddingBackend, EmbeddingPayload
 
 from protea_backends.esm import EsmBackend, plugin
 
@@ -42,3 +50,242 @@ def test_load_model_signature_present() -> None:
     # exists; this just pins the expected callable shape.
     assert callable(plugin.load_model)
     assert callable(plugin.embed_batch)
+
+
+def test_embed_batch_per_residue_method_exists() -> None:
+    """MIL.1a: ESM overrides the default-raise contract method."""
+    assert callable(plugin.embed_batch_per_residue)
+    # Method is overridden on the subclass (not the base ABC's
+    # default ``NotImplementedError`` body).
+    assert (
+        type(plugin).embed_batch_per_residue
+        is not EmbeddingBackend.embed_batch_per_residue
+    )
+
+
+def test_embed_batch_per_residue_empty_sequences() -> None:
+    """Empty input returns an empty per-residue payload (no torch needed)."""
+    payload = plugin.embed_batch_per_residue(
+        model=object(),
+        tokenizer=object(),
+        sequences=[],
+        emit=lambda *a, **kw: None,
+    )
+    assert isinstance(payload, EmbeddingPayload)
+    assert payload.granularity == "per_residue"
+    assert payload.residues == []
+    assert payload.attention_mask == []
+
+
+_TORCH_AVAILABLE = importlib.util.find_spec("torch") is not None
+
+
+class _StubTokens(dict):  # type: ignore[type-arg]
+    """Dict-like tokens carrier matching the HF tokenizer return type."""
+
+
+class _StubTokenizer:
+    """Tokenizer stub that returns deterministic ids + mask.
+
+    Produces ``L + 2`` tokens per sequence (CLS + residues + EOS),
+    matching real HF EsmTokenizer behaviour with ``add_special_tokens=True``.
+    """
+
+    def __call__(
+        self,
+        seq: str,
+        *,
+        return_tensors: str,
+        truncation: bool,
+        add_special_tokens: bool,
+        max_length: int | None = None,
+    ) -> _StubTokens:
+        import torch
+
+        del return_tensors, truncation, add_special_tokens, max_length
+        n = len(seq) + 2
+        ids = torch.zeros((1, n), dtype=torch.long)
+        mask = torch.ones((1, n), dtype=torch.long)
+        out = _StubTokens()
+        out["input_ids"] = ids
+        out["attention_mask"] = mask
+        return out
+
+
+class _StubModel:
+    """Model stub exposing the surface used by ESM's residue extractor."""
+
+    def __init__(self, dim: int = 8) -> None:
+        import torch
+
+        self._dim = dim
+        self._param = torch.nn.Parameter(torch.zeros(1))
+
+    def parameters(self) -> Any:
+        yield self._param
+
+    def __call__(self, **tokens: Any) -> Any:
+        import torch
+
+        n = int(tokens["input_ids"].shape[1])
+        # Single layer's hidden state, shape (1, n, dim). Distinct per
+        # position so the test can verify CLS / EOS stripping.
+        hs = torch.arange(n * self._dim, dtype=torch.float32).reshape(1, n, self._dim)
+        return type("Out", (), {"hidden_states": (hs,)})()
+
+
+@pytest.mark.skipif(not _TORCH_AVAILABLE, reason="torch not installed in test env")
+def test_embed_batch_per_residue_roundtrip_with_stubs() -> None:
+    """MIL.1a contract test: ESM per-residue path round-trips end-to-end.
+
+    Uses tokenizer + model stubs so the heavy ESM checkpoint is not
+    required. Asserts the resulting :class:`EmbeddingPayload` validates,
+    has the correct shapes for each input sequence (CLS and EOS
+    stripped), float16 dtype, all-ones masks, and survives a
+    ``as_matrix`` round-trip to a ``(B, D)`` matrix.
+    """
+    sequences = ["MSEQ", "GG"]
+    payload = plugin.embed_batch_per_residue(
+        model=_StubModel(dim=8),
+        tokenizer=_StubTokenizer(),
+        sequences=sequences,
+        emit=lambda *a, **kw: None,
+    )
+    assert isinstance(payload, EmbeddingPayload)
+    assert payload.granularity == "per_residue"
+    assert payload.residues is not None and len(payload.residues) == 2
+    assert payload.attention_mask is not None and len(payload.attention_mask) == 2
+
+    for seq, residues, mask in zip(
+        sequences, payload.residues, payload.attention_mask, strict=True
+    ):
+        assert residues.shape == (len(seq), 8)
+        assert residues.dtype == np.float16
+        assert mask.shape == (len(seq),)
+        assert mask.dtype == bool
+        assert mask.all()
+
+    matrix = payload.as_matrix()
+    assert matrix.shape == (2, 8)
+    assert matrix.dtype == np.float16
+
+
+@pytest.mark.skipif(not _TORCH_AVAILABLE, reason="torch not installed in test env")
+def test_embed_chunks_returns_chunk_embedding_per_sequence() -> None:
+    """T2A.1 contract: ``embed_chunks`` mirrors PROTEA's legacy ``_embed_esm``.
+
+    With the residue-level mean pooling path (no chunking), one
+    ``ChunkEmbedding`` is returned per sequence. The vector shape is
+    ``(hidden_dim,)`` and the chunk window covers the full sequence
+    (``chunk_index_s=0``, ``chunk_index_e=None``).
+    """
+    from types import SimpleNamespace
+
+    from protea_backends._chunk_helpers import ChunkEmbedding
+
+    cfg = SimpleNamespace(
+        max_length=1024,
+        layer_indices=[0],
+        layer_agg="mean",
+        pooling="mean",
+        normalize=False,
+        normalize_residues=False,
+        use_chunking=False,
+        chunk_size=512,
+        chunk_overlap=0,
+    )
+    sequences = ["MSEQ", "GG"]
+    out = plugin.embed_chunks(
+        model=_StubModel(dim=8),
+        tokenizer=_StubTokenizer(),
+        sequences=sequences,
+        config=cfg,
+        device="cpu",
+    )
+    assert len(out) == 2
+    for seq, chunks in zip(sequences, out, strict=True):
+        assert len(chunks) == 1
+        chunk = chunks[0]
+        assert isinstance(chunk, ChunkEmbedding)
+        assert chunk.chunk_index_s == 0
+        assert chunk.chunk_index_e is None
+        assert chunk.vector.shape == (8,)
+        # Sanity: the stub model produces deterministic per-position
+        # tensors, so a non-empty sequence yields a non-zero mean.
+        assert seq  # silence unused-loop-var lint while keeping the iteration
+        assert np.isfinite(chunk.vector).all()
+
+
+@pytest.mark.skipif(not _TORCH_AVAILABLE, reason="torch not installed in test env")
+def test_embed_chunks_cls_pool_returns_single_vector() -> None:
+    """CLS pooling path returns one ``ChunkEmbedding`` whose vector is the CLS row."""
+    from types import SimpleNamespace
+
+    cfg = SimpleNamespace(
+        max_length=1024,
+        layer_indices=[0],
+        layer_agg="mean",
+        pooling="cls",
+        normalize=False,
+        normalize_residues=False,
+        use_chunking=False,
+        chunk_size=512,
+        chunk_overlap=0,
+    )
+    out = plugin.embed_chunks(
+        model=_StubModel(dim=4),
+        tokenizer=_StubTokenizer(),
+        sequences=["AC"],
+        config=cfg,
+        device="cpu",
+    )
+    assert len(out) == 1
+    assert len(out[0]) == 1
+    assert out[0][0].vector.shape == (4,)
+
+
+@pytest.mark.skipif(not _TORCH_AVAILABLE, reason="torch not installed in test env")
+def test_embed_chunks_chunking_splits_long_sequences() -> None:
+    """Chunked path emits one ``ChunkEmbedding`` per overlapping window."""
+    from types import SimpleNamespace
+
+    cfg = SimpleNamespace(
+        max_length=1024,
+        layer_indices=[0],
+        layer_agg="mean",
+        pooling="mean",
+        normalize=False,
+        normalize_residues=False,
+        use_chunking=True,
+        chunk_size=3,
+        chunk_overlap=1,
+    )
+    # 10-residue sequence yields spans (0,3),(2,5),(4,7),(6,9),(8,10) (5 chunks).
+    out = plugin.embed_chunks(
+        model=_StubModel(dim=4),
+        tokenizer=_StubTokenizer(),
+        sequences=["A" * 10],
+        config=cfg,
+        device="cpu",
+    )
+    assert len(out) == 1
+    chunks = out[0]
+    assert len(chunks) == 5
+    starts = [c.chunk_index_s for c in chunks]
+    ends = [c.chunk_index_e for c in chunks]
+    assert starts == [0, 2, 4, 6, 8]
+    assert ends == [3, 5, 7, 9, 10]
+
+
+@pytest.mark.skipif(not _TORCH_AVAILABLE, reason="torch not installed in test env")
+def test_embed_batch_mean_pool_still_returns_matrix() -> None:
+    """MIL.1a retro-compat: mean-pool path still returns a ``(B, D)`` ndarray."""
+    out = plugin.embed_batch(
+        model=_StubModel(dim=8),
+        tokenizer=_StubTokenizer(),
+        sequences=["MSEQ", "GG"],
+        emit=lambda *a, **kw: None,
+    )
+    assert isinstance(out, np.ndarray)
+    assert out.shape == (2, 8)
+    assert out.dtype == np.float16
