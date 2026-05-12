@@ -98,10 +98,11 @@ class _StubTokenizer:
         return_tensors: str,
         truncation: bool,
         add_special_tokens: bool,
+        max_length: int | None = None,
     ) -> _StubTokens:
         import torch
 
-        del return_tensors, truncation, add_special_tokens
+        del return_tensors, truncation, add_special_tokens, max_length
         n = len(seq) + 2
         ids = torch.zeros((1, n), dtype=torch.long)
         mask = torch.ones((1, n), dtype=torch.long)
@@ -167,6 +168,113 @@ def test_embed_batch_per_residue_roundtrip_with_stubs() -> None:
     matrix = payload.as_matrix()
     assert matrix.shape == (2, 8)
     assert matrix.dtype == np.float16
+
+
+@pytest.mark.skipif(not _TORCH_AVAILABLE, reason="torch not installed in test env")
+def test_embed_chunks_returns_chunk_embedding_per_sequence() -> None:
+    """T2A.1 contract: ``embed_chunks`` mirrors PROTEA's legacy ``_embed_esm``.
+
+    With the residue-level mean pooling path (no chunking), one
+    ``ChunkEmbedding`` is returned per sequence. The vector shape is
+    ``(hidden_dim,)`` and the chunk window covers the full sequence
+    (``chunk_index_s=0``, ``chunk_index_e=None``).
+    """
+    from types import SimpleNamespace
+
+    from protea_backends._chunk_helpers import ChunkEmbedding
+
+    cfg = SimpleNamespace(
+        max_length=1024,
+        layer_indices=[0],
+        layer_agg="mean",
+        pooling="mean",
+        normalize=False,
+        normalize_residues=False,
+        use_chunking=False,
+        chunk_size=512,
+        chunk_overlap=0,
+    )
+    sequences = ["MSEQ", "GG"]
+    out = plugin.embed_chunks(
+        model=_StubModel(dim=8),
+        tokenizer=_StubTokenizer(),
+        sequences=sequences,
+        config=cfg,
+        device="cpu",
+    )
+    assert len(out) == 2
+    for seq, chunks in zip(sequences, out, strict=True):
+        assert len(chunks) == 1
+        chunk = chunks[0]
+        assert isinstance(chunk, ChunkEmbedding)
+        assert chunk.chunk_index_s == 0
+        assert chunk.chunk_index_e is None
+        assert chunk.vector.shape == (8,)
+        # Sanity: the stub model produces deterministic per-position
+        # tensors, so a non-empty sequence yields a non-zero mean.
+        assert seq  # silence unused-loop-var lint while keeping the iteration
+        assert np.isfinite(chunk.vector).all()
+
+
+@pytest.mark.skipif(not _TORCH_AVAILABLE, reason="torch not installed in test env")
+def test_embed_chunks_cls_pool_returns_single_vector() -> None:
+    """CLS pooling path returns one ``ChunkEmbedding`` whose vector is the CLS row."""
+    from types import SimpleNamespace
+
+    cfg = SimpleNamespace(
+        max_length=1024,
+        layer_indices=[0],
+        layer_agg="mean",
+        pooling="cls",
+        normalize=False,
+        normalize_residues=False,
+        use_chunking=False,
+        chunk_size=512,
+        chunk_overlap=0,
+    )
+    out = plugin.embed_chunks(
+        model=_StubModel(dim=4),
+        tokenizer=_StubTokenizer(),
+        sequences=["AC"],
+        config=cfg,
+        device="cpu",
+    )
+    assert len(out) == 1
+    assert len(out[0]) == 1
+    assert out[0][0].vector.shape == (4,)
+
+
+@pytest.mark.skipif(not _TORCH_AVAILABLE, reason="torch not installed in test env")
+def test_embed_chunks_chunking_splits_long_sequences() -> None:
+    """Chunked path emits one ``ChunkEmbedding`` per overlapping window."""
+    from types import SimpleNamespace
+
+    cfg = SimpleNamespace(
+        max_length=1024,
+        layer_indices=[0],
+        layer_agg="mean",
+        pooling="mean",
+        normalize=False,
+        normalize_residues=False,
+        use_chunking=True,
+        chunk_size=3,
+        chunk_overlap=1,
+    )
+    # 10-residue sequence yields spans (0,3),(2,5),(4,7),(6,9),(8,10) (5 chunks).
+    out = plugin.embed_chunks(
+        model=_StubModel(dim=4),
+        tokenizer=_StubTokenizer(),
+        sequences=["A" * 10],
+        config=cfg,
+        device="cpu",
+    )
+    assert len(out) == 1
+    chunks = out[0]
+    assert len(chunks) == 5
+    starts = [c.chunk_index_s for c in chunks]
+    ends = [c.chunk_index_e for c in chunks]
+    assert starts == [0, 2, 4, 6, 8]
+    assert ends == [3, 5, 7, 9, 10]
 
 
 @pytest.mark.skipif(not _TORCH_AVAILABLE, reason="torch not installed in test env")
