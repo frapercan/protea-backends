@@ -19,6 +19,16 @@ Heavy ML deps (torch, transformers) are imported lazily inside
 Install runtime stack with ``pip install protea-backends[t5]``
 (extras land in F2A.5 of master plan v3).
 
+Two output paths:
+
+* :meth:`T5Backend.embed_batch` returns the historical ``(B, D)``
+  mean-pooled ``float16`` matrix.
+* :meth:`T5Backend.embed_batch_per_residue` returns an
+  :class:`protea_contracts.EmbeddingPayload` with ``B`` ragged
+  ``(L_i, D)`` ``float16`` tensors and matching attention masks
+  (AA2fold prefix and EOS already stripped). Wired in MIL.1b to
+  match the ESM precedent from MIL.1a.
+
 Example::
 
     from protea_backends.t5 import plugin
@@ -31,6 +41,9 @@ Example::
     embeddings = plugin.embed_batch(
         model, tok, ["MSEQ"], emit=lambda *a, **k: None
     )
+    per_residue = plugin.embed_batch_per_residue(
+        model, tok, ["MSEQ"], emit=lambda *a, **k: None
+    )
 """
 
 from __future__ import annotations
@@ -39,7 +52,7 @@ import re
 from typing import Any, cast
 
 import numpy as np
-from protea_contracts import EmbeddingBackend
+from protea_contracts import EmbeddingBackend, EmbeddingPayload
 
 
 class T5Backend(EmbeddingBackend):
@@ -102,6 +115,94 @@ class T5Backend(EmbeddingBackend):
         if not sequences:
             return np.zeros((0, 0), dtype=np.float16)
 
+        residue_tensors, use_aa2fold = self._compute_residue_tensors(
+            model, tokenizer, sequences, layers=layers, layer_agg=layer_agg
+        )
+
+        out: list[np.ndarray[Any, Any]] = []
+        for residues in residue_tensors:
+            pooled = _pool_residues(residues, pooling)
+            out.append(pooled.cpu().numpy().astype(np.float16))
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        emit(
+            "backend.t5.embed_done",
+            None,
+            {"n_sequences": len(sequences), "use_aa2fold": use_aa2fold},
+            "info",
+        )
+        return cast("np.ndarray[Any, Any]", np.stack(out).astype(np.float16))
+
+    def embed_batch_per_residue(
+        self,
+        model: Any,
+        tokenizer: Any,
+        sequences: list[str],
+        *,
+        emit: Any,
+        layers: list[int] | None = None,
+    ) -> EmbeddingPayload:
+        """Run inference and return per-residue embeddings + masks.
+
+        Returns an :class:`EmbeddingPayload` with
+        ``granularity="per_residue"``. Each entry in ``residues`` is the
+        ``(L_i, hidden_dim)`` ``float16`` tensor for one sequence, with
+        the AA2fold prefix (ProstT5 only) and the trailing EOS already
+        stripped so ``residues[i][j]`` is the embedding of the ``j``-th
+        amino acid of ``sequences[i]``. The matching ``attention_mask[i]``
+        is all-ones (kept for forward compat with padded-batch consumers).
+        """
+        if not sequences:
+            return EmbeddingPayload(
+                granularity="per_residue",
+                residues=[],
+                attention_mask=[],
+            )
+
+        residue_tensors, _use_aa2fold = self._compute_residue_tensors(
+            model, tokenizer, sequences, layers=layers, layer_agg="mean"
+        )
+
+        residues_np = [r.cpu().numpy().astype(np.float16) for r in residue_tensors]
+        masks = [np.ones((r.shape[0],), dtype=bool) for r in residues_np]
+
+        emit(
+            "backend.t5.embed_per_residue_done",
+            None,
+            {
+                "n_sequences": len(sequences),
+                "total_residues": int(sum(r.shape[0] for r in residues_np)),
+            },
+            "info",
+        )
+        return EmbeddingPayload(
+            granularity="per_residue",
+            residues=residues_np,
+            attention_mask=masks,
+        )
+
+    def _compute_residue_tensors(
+        self,
+        model: Any,
+        tokenizer: Any,
+        sequences: list[str],
+        *,
+        layers: list[int] | None,
+        layer_agg: str,
+    ) -> tuple[list[Any], bool]:
+        """Run T5 forward + return one residue-level torch tensor per sequence.
+
+        Shared core of :meth:`embed_batch` and
+        :meth:`embed_batch_per_residue`. Strips the AA2fold prefix (1
+        token, ProstT5 only) and the trailing EOS so residue indices
+        align with amino-acid positions. Tensors are float32; callers
+        cast to float16 on the way out. Returns ``(tensors, use_aa2fold)``
+        so the caller can emit the flag in its event payload.
+        """
+        import torch
+
         config_name = getattr(model.config, "name_or_path", "") or ""
         use_aa2fold = "prostt5" in str(config_name).lower()
 
@@ -127,44 +228,44 @@ class T5Backend(EmbeddingBackend):
         hidden_states = outputs.hidden_states
         del outputs
 
-        use_layers = layers if layers else [0]
-        stack = torch.stack(
-            [hidden_states[-(li + 1)] for li in use_layers], dim=0
-        )
-        if layer_agg == "mean":
-            layer_pooled = stack.mean(dim=0)
-        elif layer_agg == "sum":
-            layer_pooled = stack.sum(dim=0)
-        else:
-            layer_pooled = stack.mean(dim=0)
-
+        layer_pooled = _aggregate_layers(hidden_states, layers, layer_agg)
         start_idx = 1 if use_aa2fold else 0
         attn = inputs["attention_mask"]
 
-        out: list[np.ndarray[Any, Any]] = []
+        residue_tensors: list[Any] = []
         for i in range(layer_pooled.shape[0]):
             actual_len = int(attn[i].sum().item())
             residues = layer_pooled[i, start_idx : actual_len - 1, :].float()
-            if pooling in ("mean", "max"):
-                pooled = (
-                    residues.mean(dim=0)
-                    if pooling == "mean"
-                    else residues.max(dim=0).values
-                )
-            else:
-                pooled = residues.mean(dim=0)
-            out.append(pooled.cpu().numpy().astype(np.float16))
+            residue_tensors.append(residues)
+        return residue_tensors, use_aa2fold
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
 
-        emit(
-            "backend.t5.embed_done",
-            None,
-            {"n_sequences": len(sequences), "use_aa2fold": use_aa2fold},
-            "info",
-        )
-        return cast("np.ndarray[Any, Any]", np.stack(out).astype(np.float16))
+def _pool_residues(residues: Any, pooling: str) -> Any:
+    """Collapse a ``(L_i, D)`` residue tensor to a single ``(D,)`` vector."""
+    if pooling == "max":
+        return residues.max(dim=0).values
+    return residues.mean(dim=0)
+
+
+def _aggregate_layers(
+    hidden_states: Any, layers: list[int] | None, layer_agg: str
+) -> Any:
+    """Stack the selected T5 layers and aggregate across them.
+
+    Operates on the batched tensors ``hidden_states[k]`` of shape
+    ``(B, L, D)`` (T5 is padded-batch) and returns a ``(B, L, D)``
+    tensor after mean / sum aggregation across the selected layers.
+    """
+    import torch
+
+    use_layers = layers if layers else [0]
+    stack = torch.stack(
+        [hidden_states[-(li + 1)] for li in use_layers], dim=0
+    )
+    if layer_agg == "sum":
+        return stack.sum(dim=0)
+    # "mean" and any unknown value fall back to mean.
+    return stack.mean(dim=0)
 
 
 #: Module-level plugin instance discovered via the
