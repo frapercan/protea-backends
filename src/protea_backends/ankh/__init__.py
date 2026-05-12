@@ -19,6 +19,16 @@ Heavy ML deps (torch, transformers) are imported lazily; install the
 runtime stack with ``pip install protea-backends[ankh]`` (extras land
 in F2A.5 of master plan v3).
 
+Two output paths:
+
+* :meth:`AnkhBackend.embed_batch` returns the historical ``(B, D)``
+  mean-pooled ``float16`` matrix.
+* :meth:`AnkhBackend.embed_batch_per_residue` returns an
+  :class:`protea_contracts.EmbeddingPayload` with ``B`` ragged
+  ``(L_i, D)`` ``float16`` tensors and matching attention masks
+  (trailing EOS already stripped). Wired in MIL.1b alongside T5 and
+  ESM-C.
+
 Example::
 
     from protea_backends.ankh import plugin
@@ -31,6 +41,9 @@ Example::
     embeddings = plugin.embed_batch(
         model, tok, ["MSEQ"], emit=lambda *a, **k: None,
     )
+    per_residue = plugin.embed_batch_per_residue(
+        model, tok, ["MSEQ"], emit=lambda *a, **k: None,
+    )
 """
 
 from __future__ import annotations
@@ -39,7 +52,7 @@ import re
 from typing import Any, cast
 
 import numpy as np
-from protea_contracts import EmbeddingBackend
+from protea_contracts import EmbeddingBackend, EmbeddingPayload
 
 
 class AnkhBackend(EmbeddingBackend):
@@ -113,6 +126,94 @@ class AnkhBackend(EmbeddingBackend):
         if not sequences:
             return np.zeros((0, 0), dtype=np.float16)
 
+        residue_tensors = self._compute_residue_tensors(
+            model, tokenizer, sequences, layers=layers, layer_agg=layer_agg
+        )
+
+        out: list[np.ndarray[Any, Any]] = []
+        for residues in residue_tensors:
+            pooled = _pool_residues(residues, pooling)
+            out.append(pooled.cpu().numpy().astype(np.float16))
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        emit(
+            "backend.ankh.embed_done",
+            None,
+            {"n_sequences": len(sequences)},
+            "info",
+        )
+        return cast("np.ndarray[Any, Any]", np.stack(out).astype(np.float16))
+
+    def embed_batch_per_residue(
+        self,
+        model: Any,
+        tokenizer: Any,
+        sequences: list[str],
+        *,
+        emit: Any,
+        layers: list[int] | None = None,
+    ) -> EmbeddingPayload:
+        """Run inference and return per-residue embeddings + masks.
+
+        Returns an :class:`EmbeddingPayload` with
+        ``granularity="per_residue"``. Each entry in ``residues`` is the
+        ``(L_i, hidden_dim)`` ``float16`` tensor for one sequence, with
+        the trailing EOS already stripped so ``residues[i][j]`` is the
+        embedding of the ``j``-th amino acid of ``sequences[i]`` (Ankh
+        has no CLS / no AA2fold prefix). The matching
+        ``attention_mask[i]`` is all-ones (kept for forward compat with
+        padded-batch consumers).
+        """
+        if not sequences:
+            return EmbeddingPayload(
+                granularity="per_residue",
+                residues=[],
+                attention_mask=[],
+            )
+
+        residue_tensors = self._compute_residue_tensors(
+            model, tokenizer, sequences, layers=layers, layer_agg="mean"
+        )
+
+        residues_np = [r.cpu().numpy().astype(np.float16) for r in residue_tensors]
+        masks = [np.ones((r.shape[0],), dtype=bool) for r in residues_np]
+
+        emit(
+            "backend.ankh.embed_per_residue_done",
+            None,
+            {
+                "n_sequences": len(sequences),
+                "total_residues": int(sum(r.shape[0] for r in residues_np)),
+            },
+            "info",
+        )
+        return EmbeddingPayload(
+            granularity="per_residue",
+            residues=residues_np,
+            attention_mask=masks,
+        )
+
+    def _compute_residue_tensors(
+        self,
+        model: Any,
+        tokenizer: Any,
+        sequences: list[str],
+        *,
+        layers: list[int] | None,
+        layer_agg: str,
+    ) -> list[Any]:
+        """Run Ankh forward + return one residue-level torch tensor per sequence.
+
+        Shared core of :meth:`embed_batch` and
+        :meth:`embed_batch_per_residue`. Tokenises with
+        ``is_split_into_words=True`` and strips the trailing EOS so
+        residue indices align with amino-acid positions. Tensors are
+        float32; callers cast to float16 on the way out.
+        """
+        import torch
+
         cleaned = [re.sub(r"[UZOB]", "X", s) for s in sequences]
         device_obj = next(model.parameters()).device
 
@@ -136,44 +237,44 @@ class AnkhBackend(EmbeddingBackend):
         hidden_states = outputs.hidden_states
         del outputs
 
-        use_layers = layers if layers else [0]
-        stack = torch.stack(
-            [hidden_states[-(li + 1)] for li in use_layers], dim=0
-        )
-        if layer_agg == "mean":
-            layer_pooled = stack.mean(dim=0)
-        elif layer_agg == "sum":
-            layer_pooled = stack.sum(dim=0)
-        else:
-            layer_pooled = stack.mean(dim=0)
-
+        layer_pooled = _aggregate_layers(hidden_states, layers, layer_agg)
         attn = inputs["attention_mask"]
 
-        out: list[np.ndarray[Any, Any]] = []
+        residue_tensors: list[Any] = []
         for i in range(layer_pooled.shape[0]):
             actual_len = int(attn[i].sum().item())
             # No CLS / no AA2fold; only strip trailing EOS.
             residues = layer_pooled[i, : actual_len - 1, :].float()
-            if pooling in ("mean", "max"):
-                pooled = (
-                    residues.mean(dim=0)
-                    if pooling == "mean"
-                    else residues.max(dim=0).values
-                )
-            else:
-                pooled = residues.mean(dim=0)
-            out.append(pooled.cpu().numpy().astype(np.float16))
+            residue_tensors.append(residues)
+        return residue_tensors
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
 
-        emit(
-            "backend.ankh.embed_done",
-            None,
-            {"n_sequences": len(sequences)},
-            "info",
-        )
-        return cast("np.ndarray[Any, Any]", np.stack(out).astype(np.float16))
+def _pool_residues(residues: Any, pooling: str) -> Any:
+    """Collapse a ``(L_i, D)`` residue tensor to a single ``(D,)`` vector."""
+    if pooling == "max":
+        return residues.max(dim=0).values
+    return residues.mean(dim=0)
+
+
+def _aggregate_layers(
+    hidden_states: Any, layers: list[int] | None, layer_agg: str
+) -> Any:
+    """Stack the selected Ankh layers and aggregate across them.
+
+    Operates on the batched tensors ``hidden_states[k]`` of shape
+    ``(B, L, D)`` (T5-style padded batch) and returns a ``(B, L, D)``
+    tensor after mean / sum aggregation across the selected layers.
+    """
+    import torch
+
+    use_layers = layers if layers else [0]
+    stack = torch.stack(
+        [hidden_states[-(li + 1)] for li in use_layers], dim=0
+    )
+    if layer_agg == "sum":
+        return stack.sum(dim=0)
+    # "mean" and any unknown value fall back to mean.
+    return stack.mean(dim=0)
 
 
 #: Module-level plugin instance discovered via the
