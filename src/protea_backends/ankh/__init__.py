@@ -19,7 +19,7 @@ Heavy ML deps (torch, transformers) are imported lazily; install the
 runtime stack with ``pip install protea-backends[ankh]`` (extras land
 in F2A.5 of master plan v3).
 
-Two output paths:
+Three output paths:
 
 * :meth:`AnkhBackend.embed_batch` returns the historical ``(B, D)``
   mean-pooled ``float16`` matrix.
@@ -28,6 +28,15 @@ Two output paths:
   ``(L_i, D)`` ``float16`` tensors and matching attention masks
   (trailing EOS already stripped). Wired in MIL.1b alongside T5 and
   ESM-C.
+* :meth:`AnkhBackend.embed_chunks` returns one
+  ``list[ChunkEmbedding]`` per sequence and is the bit-exact home of
+  PROTEA's legacy ``_embed_ankh`` pipeline (T2A.3): multi-layer
+  selection / aggregation, per-residue normalisation, chunking, and
+  ``mean`` / ``max`` / ``mean_max`` / ``cls`` pooling. ``protea-core``
+  dispatches to it from ``compute_embeddings._dispatch_embed``.
+  Internally delegates to :func:`protea_backends.t5.embed_chunks_with_mode`
+  with ``use_aa2fold=False, split_into_words=True`` to reuse the
+  shared T5 batched pipeline without code duplication.
 
 Example::
 
@@ -53,6 +62,16 @@ from typing import Any, cast
 
 import numpy as np
 from protea_contracts import EmbeddingBackend, EmbeddingPayload
+
+from protea_backends._chunk_helpers import ChunkEmbedding
+from protea_backends.t5 import T5Mode, embed_chunks_with_mode
+
+#: Tokenisation mode for Ankh: never inject the ``<AA2fold>`` prefix
+#: and tokenise via ``is_split_into_words=True`` (Ankh's SentencePiece
+#: tokeniser maps a literal space to ``<unk>``). Module-level constant
+#: so the :meth:`AnkhBackend.embed_chunks` default stays a 5-arg shape
+#: and ruff B008 does not flag a callable default argument.
+_ANKH_MODE = T5Mode(use_aa2fold=False, split_into_words=True)
 
 
 class AnkhBackend(EmbeddingBackend):
@@ -193,6 +212,32 @@ class AnkhBackend(EmbeddingBackend):
             granularity="per_residue",
             residues=residues_np,
             attention_mask=masks,
+        )
+
+    def embed_chunks(
+        self,
+        model: Any,
+        tokenizer: Any,
+        sequences: list[str],
+        config: Any,
+        device: str,
+    ) -> list[list[ChunkEmbedding]]:
+        """Embed sequences with Ankh and return PROTEA's chunked output.
+
+        Bit-exact port of PROTEA's pre-plugin ``_embed_ankh`` pipeline
+        (T2A.3 of master plan v3.2). Delegates to the shared T5
+        :func:`protea_backends.t5.embed_chunks_with_mode` helper with
+        Ankh's tokenisation mode (no ``<AA2fold>`` prefix, list-of-chars
+        tokenisation) so the layer / chunk / pool logic stays in one
+        place.
+
+        ``config`` is duck-typed to PROTEA's ``EmbeddingConfig`` (any
+        object with ``model_name``, ``max_length``, ``layer_indices``,
+        ``layer_agg``, ``pooling``, ``normalize``, ``normalize_residues``,
+        ``use_chunking``, ``chunk_size`` and ``chunk_overlap``).
+        """
+        return embed_chunks_with_mode(
+            model, tokenizer, sequences, config, device, _ANKH_MODE
         )
 
     def _compute_residue_tensors(
