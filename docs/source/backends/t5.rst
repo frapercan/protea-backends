@@ -6,7 +6,7 @@ ProtTrans family. It also handles ProstT5, which is structurally a
 T5 encoder but expects an explicit ``<AA2fold>`` direction prefix
 when embedding sequences in amino-acid space.
 
-:Models supported: ProtT5-XL (``Rostlab/prot_t5_xl_uniref50``),
+:Models supported: ProtT5-XL (``Rostlab/prot_t5_xl_half_uniref50-enc``),
                    ProstT5 (``Rostlab/ProstT5``).
 :Extra: ``protea-backends[t5]``
 :Heavy deps: ``torch``, ``transformers``, ``sentencepiece``
@@ -14,8 +14,34 @@ when embedding sequences in amino-acid space.
 :Pooling: mean over residues; ``EOS`` token and ProstT5 prefix tokens
           excluded.
 
+Canonical PROTEA checkpoints
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Both T5 variants are part of the canonical 8-PLM research pipeline
+(see ``project_canonical_8plm_embedding_configs.md`` in the PROTEA
+memory store and ADR D35, PROTEA PR #418):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 45 35
+
+   * - PLM key
+     - HuggingFace checkpoint
+     - ``embedding_config_id``
+   * - ``prot_t5``
+     - ``Rostlab/prot_t5_xl_half_uniref50-enc``
+     - ``084943c6-fec1-441d-bdc5-63b0268ada1b``
+   * - ``prostt5``
+     - ``Rostlab/ProstT5``
+     - ``c0ae5b69-d6dc-41cf-a711-1739d3d2e170``
+
+Note: the canonical ProtT5 checkpoint is the **half-precision** encoder
+(``prot_t5_xl_half_uniref50-enc``), not the full-precision variant.
+The full-precision ``prot_t5_xl_uniref50`` is classified as superseded
+in the PROTEA embedding config registry.
+
 Quirks and operational notes
-----------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - **U / Z / O / B** residues are normalised to ``X`` before
   tokenisation so the SentencePiece tokenizer does not split them
@@ -28,7 +54,7 @@ Quirks and operational notes
   amino-acid alphabet is uppercase by convention.
 
 API reference
--------------
+~~~~~~~~~~~~~
 
 .. automodule:: protea_backends.t5
    :members:

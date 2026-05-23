@@ -14,8 +14,29 @@ multimodal models.
 :Pooling: mean over residues; ``BOS`` (position 0) and trailing
           ``EOS`` excluded.
 
+Canonical PROTEA checkpoint
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+ESM-C 600M is part of the canonical 8-PLM research pipeline
+(see ``project_canonical_8plm_embedding_configs.md`` in the PROTEA
+memory store and ADR D35, PROTEA PR #418):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 38 42
+
+   * - PLM key
+     - SDK checkpoint name
+     - ``embedding_config_id``
+   * - ``esmc_600m``
+     - ``esmc_600m``
+     - ``2bf1e753-022f-44b8-a131-9a90acb4024e``
+
+ESM-C 300M (``esmc_300m``, config ``c85d1afe``) is classified as a
+single-PLM baseline reference and is not part of the 8-PLM ensemble.
+
 Quirks and operational notes
-----------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - **No tokenizer.** The ESM-C API consumes raw protein sequences and
   drives its own tokenisation internally. ``load_model`` therefore
@@ -32,7 +53,7 @@ Quirks and operational notes
   forms and normalises to a tensor of shape ``(L, D)``.
 
 API reference
--------------
+~~~~~~~~~~~~~
 
 .. automodule:: protea_backends.esm3c
    :members:

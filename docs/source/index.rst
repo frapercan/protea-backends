@@ -7,6 +7,50 @@ Each backend is a thin adapter that implements the
 ``protea-core`` via the ``protea.backends`` entry-points group, so a
 deployment can ship only the backends it actually needs.
 
+PROTEA stack
+~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 18 12 50
+
+   * - Repo
+     - Role
+     - Status
+     - Summary
+   * - `PROTEA <https://github.com/frapercan/PROTEA>`_
+     - Platform
+     - active
+     - Backend platform: ORM, job queue, FastAPI surface, frontend, orchestration.
+   * - `protea-contracts <https://github.com/frapercan/protea-contracts>`_
+     - Contracts
+     - beta
+     - Shared ABCs, pydantic payloads, feature schema, schema_sha. Imported by every repo.
+   * - `protea-method <https://github.com/frapercan/protea-method>`_
+     - Inference
+     - active
+     - Pure inference path (KNN, feature compute, reranker apply). Bind-mounted by LAFA containers.
+   * - `protea-sources <https://github.com/frapercan/protea-sources>`_
+     - Source plugin
+     - skeleton
+     - Annotation source plugins (GOA, QuickGO, UniProt). Discovered via entry_points.
+   * - `protea-runners <https://github.com/frapercan/protea-runners>`_
+     - Runner plugin
+     - skeleton
+     - Experiment runner plugins (LightGBM lab, KNN baseline). Discovered via entry_points.
+   * - **protea-backends** (this repo)
+     - Backend plugin
+     - active
+     - PLM embedding backends (ESM family, T5/ProstT5, Ankh, ESM-C). Discovered via entry_points.
+   * - `protea-reranker-lab <https://github.com/frapercan/protea-reranker-lab>`_
+     - Lab
+     - active
+     - LightGBM reranker training lab. Publishes boosters back via /reranker-models/import-by-reference.
+   * - `cafaeval-protea <https://github.com/frapercan/cafaeval-protea>`_
+     - Evaluator
+     - active
+     - Fork of cafaeval (CAFA-evaluator-PK) with PK-coverage fix and bit-exact parity harness.
+
 .. note::
 
    This package is a *runtime* dependency of ``protea-core`` only when
