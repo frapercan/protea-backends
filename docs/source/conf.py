@@ -43,14 +43,15 @@ autodoc_typehints = "description"
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 
-# Heavy ML deps live behind extras and are not installed in the docs
-# build environment. autodoc would otherwise crash trying to import
-# them; mock them out here.
+# Heavy ML deps and protea-contracts live outside the docs build
+# environment. autodoc would otherwise crash trying to import them;
+# mock them out here so autodoc can introspect signatures from source.
 autodoc_mock_imports = [
     "torch",
     "transformers",
     "sentencepiece",
     "esm",
+    "protea_contracts",
 ]
 
 intersphinx_mapping = {
