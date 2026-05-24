@@ -11,7 +11,9 @@ entry-points group, so a deployment ships only the backends it actually needs.
 [![Docs](https://github.com/frapercan/protea-backends/actions/workflows/docs.yml/badge.svg)](https://github.com/frapercan/protea-backends/actions/workflows/docs.yml)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 
-**Status:** v0.0.1 (experimental, pre-1.0; the plugin API may change across minor releases).
+**Status:** v0.0.1, production. All four backends (ESM family, T5/ProstT5, Ankh,
+ESM-C) are deployed and have been used to hydrate the canonical 8-PLM embedding
+pools. The plugin API may change across minor releases.
 
 ---
 
