@@ -24,7 +24,7 @@ PROTEA stack
      - Backend platform: ORM, job queue, FastAPI surface, frontend, orchestration.
    * - `protea-contracts <https://github.com/frapercan/protea-contracts>`_
      - Contracts
-     - beta
+     - active
      - Shared ABCs, pydantic payloads, feature schema, schema_sha. Imported by every repo.
    * - `protea-method <https://github.com/frapercan/protea-method>`_
      - Inference
@@ -32,12 +32,12 @@ PROTEA stack
      - Pure inference path (KNN, feature compute, reranker apply). Bind-mounted by LAFA containers.
    * - `protea-sources <https://github.com/frapercan/protea-sources>`_
      - Source plugin
-     - skeleton
-     - Annotation source plugins (GOA, QuickGO, UniProt). Discovered via entry_points.
+     - active
+     - Annotation source plugins (GOA, QuickGO, UniProt, InterPro). Discovered via entry_points.
    * - `protea-runners <https://github.com/frapercan/protea-runners>`_
      - Runner plugin
-     - skeleton
-     - Experiment runner plugins (LightGBM lab, KNN baseline). Discovered via entry_points.
+     - active
+     - Experiment runner plugins (LightGBM, KNN, baseline). Discovered via entry_points.
    * - **protea-backends** (this repo)
      - Backend plugin
      - active
