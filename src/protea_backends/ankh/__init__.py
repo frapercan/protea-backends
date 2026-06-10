@@ -63,7 +63,11 @@ from typing import Any, cast
 import numpy as np
 from protea_contracts import EmbeddingBackend, EmbeddingPayload
 
-from protea_backends._chunk_helpers import ChunkEmbedding
+from protea_backends._chunk_helpers import (
+    ChunkEmbedding,
+    pool_residues,
+    stack_and_aggregate,
+)
 from protea_backends.t5 import T5Mode, embed_chunks_with_mode
 
 #: Tokenisation mode for Ankh: never inject the ``<AA2fold>`` prefix
@@ -151,7 +155,7 @@ class AnkhBackend(EmbeddingBackend):
 
         out: list[np.ndarray[Any, Any]] = []
         for residues in residue_tensors:
-            pooled = _pool_residues(residues, pooling)
+            pooled = pool_residues(residues, pooling)
             out.append(pooled.cpu().numpy().astype(np.float16))
 
         if torch.cuda.is_available():
@@ -294,13 +298,6 @@ class AnkhBackend(EmbeddingBackend):
         return residue_tensors
 
 
-def _pool_residues(residues: Any, pooling: str) -> Any:
-    """Collapse a ``(L_i, D)`` residue tensor to a single ``(D,)`` vector."""
-    if pooling == "max":
-        return residues.max(dim=0).values
-    return residues.mean(dim=0)
-
-
 def _aggregate_layers(
     hidden_states: Any, layers: list[int] | None, layer_agg: str
 ) -> Any:
@@ -308,18 +305,12 @@ def _aggregate_layers(
 
     Operates on the batched tensors ``hidden_states[k]`` of shape
     ``(B, L, D)`` (T5-style padded batch) and returns a ``(B, L, D)``
-    tensor after mean / sum aggregation across the selected layers.
+    tensor after the shared :func:`stack_and_aggregate` reduction.
     """
-    import torch
-
     use_layers = layers if layers else [0]
-    stack = torch.stack(
-        [hidden_states[-(li + 1)] for li in use_layers], dim=0
+    return stack_and_aggregate(
+        [hidden_states[-(li + 1)] for li in use_layers], layer_agg
     )
-    if layer_agg == "sum":
-        return stack.sum(dim=0)
-    # "mean" and any unknown value fall back to mean.
-    return stack.mean(dim=0)
 
 
 #: Module-level plugin instance discovered via the
