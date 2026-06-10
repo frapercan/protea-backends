@@ -1,10 +1,17 @@
-Backends
-========
+The backends
+============
 
 Each page below documents one backend plugin: its supported models,
 the extra to install, the canonical ``embedding_config_id`` UUIDs used
 by the PROTEA research pipeline, any backend-specific quirks, and the
-autodoc listing of the plugin class.
+autodoc listing of the plugin class. They share the contract and pooling
+model described in :doc:`../concepts`, so the per-backend pages stay
+focused on what makes each PLM different (tokenisation, numerical type,
+special-token handling).
+
+To add a PLM that is not listed here, see :doc:`../contributing`: a new
+backend is a single file in this repository plus one line in
+``pyproject.toml``.
 
 The 8 canonical PROTEA checkpoints span three plugins:
 
