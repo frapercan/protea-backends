@@ -106,48 +106,30 @@ Install
    # everything at once
    pip install "protea-backends[all]"
 
-Discovery
----------
+The :doc:`quickstart` walks the full path from install to a first
+embedding; :doc:`contract` covers the method surface and the ``emit``
+event protocol.
 
-``protea-core`` resolves a backend by name through
-``importlib.metadata.entry_points``::
-
-    from importlib.metadata import entry_points
-
-    eps = entry_points(group="protea.backends")
-    plugin = eps["esm"].load()
-    model, tokenizer = plugin.load_model(
-        "facebook/esm2_t12_35M_UR50D", "cpu", emit=lambda *a, **k: None
-    )
-
-The ``plugin`` symbol is a module-level instance; importing it does
-not pay the cost of the heavy ML stack until ``load_model`` is
-called.
-
-Contracts
----------
-
-Each backend implements :class:`protea_contracts.EmbeddingBackend`,
-which carries three obligations:
-
-- a class attribute ``name`` matching the entry-point name;
-- ``load_model(model_name, device, emit)`` returning ``(model,
-  tokenizer)`` (``tokenizer`` may be ``None`` for backends that do not
-  expose one, such as ESM-C);
-- ``embed_batch(model, tokenizer, sequences, *, emit, layers,
-  layer_agg, pooling)`` returning a float16 ``ndarray`` of shape
-  ``(batch_size, hidden_dim)``.
-
-The ``emit`` callable is provided by ``protea-core`` and writes
-structured ``JobEvent`` rows to the database in real time. Backends
-should emit ``backend.<name>.load_start``, ``…load_done``, and
-``…embed_done`` at minimum.
-
-Plugin reference
+Where to go next
 ----------------
+
+- :doc:`quickstart`: install one extra and embed a batch in five
+  minutes.
+- :doc:`contract`: the :class:`protea_contracts.EmbeddingBackend`
+  surface every backend implements, plus the ``emit`` event protocol.
+- :doc:`backends/index`: one page per backend with supported models,
+  canonical ``embedding_config_id`` UUIDs and backend-specific quirks.
+- :doc:`contributing`: add a new backend in one file plus one
+  ``pyproject.toml`` line.
+- :doc:`api`: full autodoc reference.
 
 .. toctree::
    :maxdepth: 2
+   :caption: Guide
+   :hidden:
 
+   quickstart
+   contract
    backends/index
    contributing
+   api
