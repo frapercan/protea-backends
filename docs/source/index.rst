@@ -1,11 +1,57 @@
 protea-backends
 ===============
 
-Protein language model (PLM) embedding backends for the PROTEA stack.
-Each backend is a thin adapter that implements the
-:class:`protea_contracts.EmbeddingBackend` ABC and is discovered by
-``protea-core`` via the ``protea.backends`` entry-points group, so a
-deployment can ship only the backends it actually needs.
+``protea-backends`` is the protein language model (PLM) embedding layer
+of the PROTEA stack. It turns amino-acid sequences into the dense
+vectors that everything downstream (the KNN index, the reranker
+features, the evaluation harness) is built on.
+
+Each PLM lives behind a small plugin that implements one contract,
+:class:`protea_contracts.EmbeddingBackend`. ``protea-core`` finds these
+plugins at startup through the ``protea.backends`` entry-points group
+and dispatches embedding work to them by name. A deployment ships only
+the plugins it needs, and discovery is cheap because no plugin imports
+``torch`` until it is actually asked to load a model.
+
+The problem this solves
+-----------------------
+
+Protein language models are heavy. ``torch``, ``transformers`` and the
+EvolutionaryScale ``esm`` SDK together weigh several gigabytes, and a
+given deployment usually runs one or two PLMs, not all of them. Folding
+that weight directly into ``protea-core`` would make the platform slow
+to import and awkward to install. ``protea-backends`` keeps the
+embedding code in its own package and applies two disciplines:
+
+- **Per-backend dependencies.** The heavy ML libraries live behind
+  Poetry extras (``[esm]``, ``[t5]``, ``[ankh]``, ``[esm3c]``). A box
+  that only runs ESM-2 never pulls the ``esm`` SDK wheel.
+- **Lazy imports.** Plugin modules import nothing heavy at the top
+  level. ``torch`` and friends are imported inside ``load_model`` and
+  ``embed_batch``, so ``protea-core`` pays zero import cost for backends
+  it never invokes.
+
+Adding a PLM is then a one-file change here plus one line in
+``pyproject.toml``. ``protea-core`` does not change.
+
+What lives here
+---------------
+
+::
+
+   src/protea_backends/
+   ├── __init__.py          # package version, nothing heavy
+   ├── _chunk_helpers.py    # shared layer / chunk / pool primitives + ChunkEmbedding
+   ├── esm/__init__.py      # ESM-1b, ESM-2 (plugin name "esm")
+   ├── t5/__init__.py       # ProtT5, ProstT5 (plugin name "t5")
+   ├── ankh/__init__.py     # Ankh-base, Ankh-large (plugin name "ankh")
+   └── esm3c/__init__.py    # ESM-C (plugin name "esm3c")
+
+Each backend directory is one plugin: a single class that subclasses
+:class:`protea_contracts.EmbeddingBackend` and a module-level ``plugin``
+instance registered as an entry point. The shared tensor logic (layer
+selection, chunk spans, pooling) lives once in ``_chunk_helpers`` so the
+per-backend files stay thin.
 
 PROTEA stack
 ~~~~~~~~~~~~
@@ -51,18 +97,8 @@ PROTEA stack
      - active
      - Fork of cafaeval (CAFA-evaluator-PK) with PK-coverage fix and bit-exact parity harness.
 
-.. note::
-
-   This package is a *runtime* dependency of ``protea-core`` only when
-   the corresponding extra is installed. Heavy ML dependencies
-   (``torch``, ``transformers``, ``sentencepiece``, ``esm``) live
-   behind per-backend Poetry extras and are imported lazily inside
-   ``load_model`` / ``embed_batch``. The plugin modules themselves are
-   import-cheap, so discovery during ``protea-core`` startup is free
-   even on machines without the heavy stack.
-
-At a glance
------------
+The backends at a glance
+------------------------
 
 .. list-table::
    :header-rows: 1
@@ -92,36 +128,26 @@ At a glance
      - Standalone ``esm`` package; no tokenizer; ``model.encode`` +
        ``LogitsConfig(return_hidden_states=True)``.
 
-Install
--------
+Install one extra at a time, or everything at once:
 
 .. code-block:: bash
 
-   # one backend at a time
-   pip install "protea-backends[esm]"
-   pip install "protea-backends[t5]"
-   pip install "protea-backends[ankh]"
-   pip install "protea-backends[esm3c]"
-
-   # everything at once
-   pip install "protea-backends[all]"
-
-The :doc:`quickstart` walks the full path from install to a first
-embedding; :doc:`contract` covers the method surface and the ``emit``
-event protocol.
+   pip install "protea-backends[esm]"     # one backend
+   pip install "protea-backends[all]"     # everything
 
 Where to go next
 ----------------
 
 - :doc:`quickstart`: install one extra and embed a batch in five
   minutes.
-- :doc:`contract`: the :class:`protea_contracts.EmbeddingBackend`
-  surface every backend implements, plus the ``emit`` event protocol.
-- :doc:`backends/index`: one page per backend with supported models,
+- :doc:`concepts`: the :class:`protea_contracts.EmbeddingBackend`
+  contract, the pooling and chunking model, entry-point discovery, and
+  the lazy-import discipline.
+- :doc:`backends/index`: one page per backend, with supported models,
   canonical ``embedding_config_id`` UUIDs and backend-specific quirks.
 - :doc:`contributing`: add a new backend in one file plus one
   ``pyproject.toml`` line.
-- :doc:`api`: full autodoc reference.
+- :doc:`api`: the full autodoc reference.
 
 .. toctree::
    :maxdepth: 2
@@ -129,7 +155,7 @@ Where to go next
    :hidden:
 
    quickstart
-   contract
+   concepts
    backends/index
    contributing
    api

@@ -67,5 +67,6 @@ Two further output paths are available on every backend:
   normalisation, overlapping chunks, and ``mean`` / ``max`` /
   ``mean_max`` / ``cls`` pooling.
 
-See :doc:`contract` for the full method surface and :doc:`backends/index`
-for per-backend quirks.
+See :doc:`concepts` for the full method surface, the pooling model and
+the discovery mechanism, and :doc:`backends/index` for per-backend
+quirks.
