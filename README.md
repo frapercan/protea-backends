@@ -9,7 +9,7 @@ entry-points group, so a deployment ships only the backends it actually needs.
 [![CI](https://github.com/frapercan/protea-backends/actions/workflows/ci.yml/badge.svg)](https://github.com/frapercan/protea-backends/actions/workflows/ci.yml)
 [![Documentation](https://img.shields.io/readthedocs/protea-backends.svg)](https://protea-backends.readthedocs.io)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](https://unlicense.org/)
 [![PyPI](https://img.shields.io/pypi/v/protea-backends.svg)](https://pypi.org/project/protea-backends/)
 
 **Status:** v0.1.0, production. All four backends (ESM family, T5/ProstT5, Ankh,
@@ -222,4 +222,5 @@ tracked in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## License
 
-MIT. See `LICENSE`.
+Released into the public domain under [The Unlicense](https://unlicense.org/).
+See [`LICENSE`](LICENSE). Author: Francisco Miguel Pérez Canales.

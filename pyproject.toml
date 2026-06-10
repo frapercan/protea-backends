@@ -7,13 +7,13 @@ name = "protea-backends"
 version = "0.1.0"
 description = "Protein language model embedding backends for the PROTEA stack: ESM family, T5/ProtT5, Ankh, ESM-C."
 authors = ["Francisco Miguel Pérez Canales <frapercan1@gmail.com>"]
-license = "MIT"
+license = "Unlicense"
 readme = "README.md"
 packages = [{ include = "protea_backends", from = "src" }]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: The Unlicense (Unlicense)",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
