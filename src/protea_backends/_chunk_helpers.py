@@ -64,8 +64,14 @@ def validate_layers(
     return req
 
 
-def aggregate_residue_layers(layer_tensors: list[Any], layer_agg: str) -> Any:
-    """Combine [L, D] tensors from multiple layers into one [L, D] tensor."""
+def aggregate_layers(layer_tensors: list[Any], layer_agg: str) -> Any:
+    """Combine per-layer tensors into one tensor for the chunked pipeline.
+
+    Works for both the residue path (each element ``[L, D]``) and the CLS
+    path (each element ``[D]``); the reduction is over the layer axis and
+    is rank-agnostic. ``concat`` joins along the last (feature) dimension.
+    Raises ``ValueError`` on an unknown ``layer_agg``.
+    """
     import torch
 
     if layer_agg == "last":
@@ -77,17 +83,32 @@ def aggregate_residue_layers(layer_tensors: list[Any], layer_agg: str) -> Any:
     raise ValueError(f"Unknown layer_agg: {layer_agg!r}. Choose: last, mean, concat")
 
 
-def aggregate_1d(layer_tensors: list[Any], layer_agg: str) -> Any:
-    """Combine [D] tensors from multiple layers into one [D] tensor (CLS path)."""
+def stack_and_aggregate(layer_views: list[Any], layer_agg: str) -> Any:
+    """Stack per-layer tensors and reduce across the layer axis (batch path).
+
+    Shared tail of every backend's ``embed_batch`` layer aggregation:
+    callers build ``layer_views`` with their own per-model indexing, then
+    this helper stacks and reduces. ``"sum"`` sums across layers; any other
+    value (including ``"mean"``) falls back to the mean, matching the
+    silent-fallback semantics of the historical per-backend code.
+    """
     import torch
 
-    if layer_agg == "last":
-        return layer_tensors[-1]
-    if layer_agg == "mean":
-        return torch.stack(layer_tensors, dim=0).mean(dim=0)
-    if layer_agg == "concat":
-        return torch.cat(layer_tensors, dim=-1)
-    raise ValueError(f"Unknown layer_agg: {layer_agg!r}. Choose: last, mean, concat")
+    stack = torch.stack(layer_views, dim=0)
+    if layer_agg == "sum":
+        return stack.sum(dim=0)
+    return stack.mean(dim=0)
+
+
+def pool_residues(residues: Any, pooling: str) -> Any:
+    """Collapse a ``(L_i, D)`` residue tensor to a single ``(D,)`` vector.
+
+    ``"max"`` takes the per-feature maximum across residues; any other
+    value (including ``"mean"``) takes the mean.
+    """
+    if pooling == "max":
+        return residues.max(dim=0).values
+    return residues.mean(dim=0)
 
 
 def compute_chunk_spans(length: int, chunk_size: int, overlap: int) -> list[tuple[int, int]]:

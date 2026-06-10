@@ -51,9 +51,10 @@ from protea_contracts import EmbeddingBackend, EmbeddingPayload
 
 from protea_backends._chunk_helpers import (
     ChunkEmbedding,
-    aggregate_1d,
-    aggregate_residue_layers,
+    aggregate_layers,
     chunk_and_pool,
+    pool_residues,
+    stack_and_aggregate,
     validate_layers,
 )
 
@@ -125,7 +126,7 @@ class EsmBackend(EmbeddingBackend):
 
         out: list[np.ndarray[Any, Any]] = []
         for residues in residue_tensors:
-            pooled = _pool_residues(residues, pooling)
+            pooled = pool_residues(residues, pooling)
             out.append(pooled.cpu().numpy().astype(np.float16))
 
         emit(
@@ -247,7 +248,7 @@ class EsmBackend(EmbeddingBackend):
             layer_tensors_1d = [
                 hidden_states[-(li + 1)][0, 0, :].float() for li in valid_layers
             ]
-            pooled = aggregate_1d(layer_tensors_1d, config.layer_agg)
+            pooled = aggregate_layers(layer_tensors_1d, config.layer_agg)
             if config.normalize:
                 pooled = F.normalize(pooled.unsqueeze(0), p=2, dim=1).squeeze(0)
             chunks = [ChunkEmbedding(0, None, pooled.cpu().numpy())]
@@ -256,7 +257,7 @@ class EsmBackend(EmbeddingBackend):
             layer_tensors_2d = [
                 hidden_states[-(li + 1)][0, 1 : actual_len - 1, :].float() for li in valid_layers
             ]
-            residues = aggregate_residue_layers(layer_tensors_2d, config.layer_agg)
+            residues = aggregate_layers(layer_tensors_2d, config.layer_agg)
             if config.normalize_residues:
                 residues = F.normalize(residues, p=2, dim=1)
             chunks = chunk_and_pool(residues, config)
@@ -311,27 +312,19 @@ class EsmBackend(EmbeddingBackend):
         return residue_tensors
 
 
-def _pool_residues(residues: Any, pooling: str) -> Any:
-    """Collapse a ``(L_i, D)`` residue tensor to a single ``(D,)`` vector."""
-    if pooling == "max":
-        return residues.max(dim=0).values
-    return residues.mean(dim=0)
-
-
 def _aggregate_layers(
     hidden_states: Any, layers: list[int] | None, layer_agg: str
 ) -> Any:
-    """Stack the selected ESM layers and aggregate across them."""
-    import torch
+    """Stack the selected ESM layers and aggregate across them.
 
+    ESM runs one sequence at a time, so each ``hidden_states[k]`` is
+    ``(1, L, D)``; index ``[0]`` to drop the unit batch axis before the
+    shared :func:`stack_and_aggregate` reduction.
+    """
     use_layers = layers if layers else [0]
-    stack = torch.stack(
-        [hidden_states[-(li + 1)][0] for li in use_layers], dim=0
+    return stack_and_aggregate(
+        [hidden_states[-(li + 1)][0] for li in use_layers], layer_agg
     )
-    if layer_agg == "sum":
-        return stack.sum(dim=0)
-    # "mean" and any unknown value fall back to mean.
-    return stack.mean(dim=0)
 
 
 #: Module-level plugin instance discovered via the

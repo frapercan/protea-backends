@@ -64,9 +64,10 @@ from protea_contracts import EmbeddingBackend, EmbeddingPayload
 
 from protea_backends._chunk_helpers import (
     ChunkEmbedding,
-    aggregate_1d,
-    aggregate_residue_layers,
+    aggregate_layers,
     chunk_and_pool,
+    pool_residues,
+    stack_and_aggregate,
     validate_layers,
 )
 
@@ -140,7 +141,7 @@ class EsmcBackend(EmbeddingBackend):
 
         out: list[np.ndarray[Any, Any]] = []
         for residues in residue_tensors:
-            pooled = _pool_residues(residues, pooling)
+            pooled = pool_residues(residues, pooling)
             out.append(pooled.cpu().numpy().astype(np.float16))
 
         if torch.cuda.is_available():
@@ -287,13 +288,6 @@ class EsmcBackend(EmbeddingBackend):
         return residue_tensors
 
 
-def _pool_residues(residues: Any, pooling: str) -> Any:
-    """Collapse a ``(L_i, D)`` residue tensor to a single ``(D,)`` vector."""
-    if pooling == "max":
-        return residues.max(dim=0).values
-    return residues.mean(dim=0)
-
-
 def _aggregate_layers(
     hidden_states: Any, layers: list[int] | None, layer_agg: str
 ) -> Any:
@@ -302,18 +296,14 @@ def _aggregate_layers(
     ESM-C returns per-sequence ``hidden_states`` either as a tuple/list
     of layer tensors (each ``(1, L, D)``) or as a single tensor of
     shape ``(num_layers, 1, L, D)`` or ``(num_layers, L, D)``. The
-    function normalises both forms to a list of ``(L, D)`` tensors, then
-    stacks across the selected layers and aggregates.
+    function normalises both forms to a list of ``(L, D)`` tensors via
+    :func:`_squeeze_layer`, then defers to the shared
+    :func:`stack_and_aggregate` reduction.
     """
-    import torch
-
     use_layers = layers if layers else [0]
-    layer_views = [_squeeze_layer(hidden_states[-(li + 1)]) for li in use_layers]
-    stack = torch.stack(layer_views, dim=0)
-    if layer_agg == "sum":
-        return stack.sum(dim=0)
-    # "mean" and any unknown value fall back to mean.
-    return stack.mean(dim=0)
+    return stack_and_aggregate(
+        [_squeeze_layer(hidden_states[-(li + 1)]) for li in use_layers], layer_agg
+    )
 
 
 def _squeeze_layer(layer: Any) -> Any:
@@ -397,13 +387,13 @@ def _embed_chunks_one(
 
     if config.pooling == "cls":
         layer_tensors_1d = [hs[-(li + 1)][0, 0, :].float() for li in valid_layers]
-        pooled = aggregate_1d(layer_tensors_1d, config.layer_agg)
+        pooled = aggregate_layers(layer_tensors_1d, config.layer_agg)
         if config.normalize:
             pooled = F.normalize(pooled.unsqueeze(0), p=2, dim=1).squeeze(0)
         chunks = [ChunkEmbedding(0, None, pooled.cpu().numpy())]
     else:
         layer_tensors_2d = [hs[-(li + 1)][0, 1:-1, :].float() for li in valid_layers]
-        residues = aggregate_residue_layers(layer_tensors_2d, config.layer_agg)
+        residues = aggregate_layers(layer_tensors_2d, config.layer_agg)
         if config.normalize_residues:
             residues = F.normalize(residues, p=2, dim=1)
         chunks = chunk_and_pool(residues, config)
