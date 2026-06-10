@@ -1,0 +1,50 @@
+name: publish
+
+# Publishes protea-backends to PyPI via Trusted Publishing (OIDC). This
+# runs only when a GitHub Release is published; it never fires on push or
+# pull_request. Before the first release works, two PyPI prerequisites
+# must be in place:
+#   1. The project name "protea-backends" must be claimable / claimed on PyPI.
+#   2. A Trusted Publisher must be registered on PyPI for this repository,
+#      workflow file (publish.yml) and the "pypi" environment.
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Trusted Publishing exchanges this OIDC token for a short-lived PyPI
+    # credential; no API token secret is stored in the repo.
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/project/protea-backends/
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

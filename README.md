@@ -7,8 +7,10 @@ is a thin adapter that implements the
 entry-points group, so a deployment ships only the backends it actually needs.
 
 [![CI](https://github.com/frapercan/protea-backends/actions/workflows/ci.yml/badge.svg)](https://github.com/frapercan/protea-backends/actions/workflows/ci.yml)
-[![Docs](https://github.com/frapercan/protea-backends/actions/workflows/docs.yml/badge.svg)](https://github.com/frapercan/protea-backends/actions/workflows/docs.yml)
+[![Docs](https://github.com/frapercan/protea-backends/actions/workflows/docs.yml/badge.svg)](https://frapercan.github.io/protea-backends/)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![PyPI](https://img.shields.io/pypi/v/protea-backends.svg)](https://pypi.org/project/protea-backends/)
 
 **Status:** v0.1.0, production. All four backends (ESM family, T5/ProstT5, Ankh,
 ESM-C) are deployed and have been used to hydrate the canonical 8-PLM embedding
@@ -202,7 +204,8 @@ Open a pull request targeting `develop`.
 
 The full Sphinx documentation (quickstart, the `EmbeddingBackend`
 contract, one page per backend, contributing guide and API reference)
-lives under [`docs/source/`](docs/source). Build it locally with:
+is published at [frapercan.github.io/protea-backends](https://frapercan.github.io/protea-backends/)
+and lives under [`docs/source/`](docs/source). Build it locally with:
 
 ```bash
 poetry install --with docs
@@ -210,9 +213,9 @@ cd docs && make html
 open docs/build/html/index.html
 ```
 
-The `docs` CI workflow builds the same HTML on every push with warnings
-treated as errors. Release notes are tracked in
-[`CHANGELOG.md`](CHANGELOG.md).
+The `docs` workflow builds the same HTML on every push with warnings
+treated as errors and deploys it to GitHub Pages from `develop`. Release
+notes are tracked in [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
