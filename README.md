@@ -6,12 +6,11 @@ is a thin adapter that implements the
 `protea-contracts` and is discovered by `protea-core` via the `protea.backends`
 entry-points group, so a deployment ships only the backends it actually needs.
 
-[![Lint](https://github.com/frapercan/protea-backends/actions/workflows/lint.yml/badge.svg)](https://github.com/frapercan/protea-backends/actions/workflows/lint.yml)
-[![Tests](https://github.com/frapercan/protea-backends/actions/workflows/test.yml/badge.svg)](https://github.com/frapercan/protea-backends/actions/workflows/test.yml)
+[![CI](https://github.com/frapercan/protea-backends/actions/workflows/ci.yml/badge.svg)](https://github.com/frapercan/protea-backends/actions/workflows/ci.yml)
 [![Docs](https://github.com/frapercan/protea-backends/actions/workflows/docs.yml/badge.svg)](https://github.com/frapercan/protea-backends/actions/workflows/docs.yml)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 
-**Status:** v0.0.1, production. All four backends (ESM family, T5/ProstT5, Ankh,
+**Status:** v0.1.0, production. All four backends (ESM family, T5/ProstT5, Ankh,
 ESM-C) are deployed and have been used to hydrate the canonical 8-PLM embedding
 pools. The plugin API may change across minor releases.
 
@@ -196,6 +195,24 @@ open docs/build/html/index.html
 
 Branch strategy: all changes target `develop`; `main` tracks stable releases.
 Open a pull request targeting `develop`.
+
+---
+
+## Documentation
+
+The full Sphinx documentation (quickstart, the `EmbeddingBackend`
+contract, one page per backend, contributing guide and API reference)
+lives under [`docs/source/`](docs/source). Build it locally with:
+
+```bash
+poetry install --with docs
+cd docs && make html
+open docs/build/html/index.html
+```
+
+The `docs` CI workflow builds the same HTML on every push with warnings
+treated as errors. Release notes are tracked in
+[`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 

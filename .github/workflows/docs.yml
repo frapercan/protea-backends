@@ -1,0 +1,33 @@
+name: docs
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install poetry
+        run: pipx install poetry
+      - name: Install docs dependencies
+        # autodoc mocks torch/transformers/esm/protea_contracts (see
+        # conf.py autodoc_mock_imports), so the heavy extras are not
+        # needed to build the API reference.
+        run: poetry install --with docs
+      - name: Build HTML (warnings are errors)
+        run: poetry run sphinx-build -b html -W --keep-going docs/source docs/build/html
+      - name: Upload built docs
+        uses: actions/upload-artifact@v4
+        with:
+          name: html-docs
+          path: docs/build/html
+          retention-days: 7
