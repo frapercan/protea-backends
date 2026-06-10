@@ -4,6 +4,17 @@ on:
   push:
   pull_request:
 
+# Allow the deploy job to publish to GitHub Pages via OIDC.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Serialise Pages deployments; never cancel an in-flight publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -25,9 +36,21 @@ jobs:
         run: poetry install --with docs
       - name: Build HTML (warnings are errors)
         run: poetry run sphinx-build -b html -W --keep-going docs/source docs/build/html
-      - name: Upload built docs
-        uses: actions/upload-artifact@v4
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: html-docs
           path: docs/build/html
-          retention-days: 7
+
+  deploy:
+    # Publish only the develop branch; PR and feature-branch builds stay
+    # at the build-and-validate step above.
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
