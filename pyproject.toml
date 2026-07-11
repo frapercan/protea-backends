@@ -5,7 +5,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry]
 name = "protea-backends"
 version = "0.1.0"
-description = "Protein language model embedding backends for the PROTEA stack: ESM family, T5/ProtT5, Ankh, ESM-C."
+description = "Protein language model embedding backends for the PROTEA stack: ESM family, T5/ProtT5, Ankh, ESM-C, ProtST."
 authors = ["Francisco Miguel Pérez Canales <frapercan1@alum.us.es>"]
 license = "Unlicense"
 readme = "README.md"
@@ -38,6 +38,7 @@ esm = ["torch", "transformers"]
 t5 = ["torch", "transformers", "sentencepiece"]
 ankh = ["torch", "transformers", "sentencepiece"]
 esm3c = ["torch", "esm"]
+protst = ["torch", "transformers"]
 all = ["torch", "transformers", "sentencepiece", "esm"]
 
 [tool.poetry.group.dev.dependencies]
@@ -60,6 +61,7 @@ esm = "protea_backends.esm:plugin"
 t5 = "protea_backends.t5:plugin"
 ankh = "protea_backends.ankh:plugin"
 esm3c = "protea_backends.esm3c:plugin"
+protst = "protea_backends.protst:plugin"
 
 [tool.ruff]
 line-length = 100
