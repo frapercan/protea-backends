@@ -74,6 +74,12 @@ _ESM1B_TOKENIZER = "facebook/esm1b_t33_650M_UR50S"
 #: the BOS and EOS special tokens.
 _MAX_RESIDUES = 1022
 
+#: Pinned commit of ``mila-intel/ProtST-esm1b``. The checkpoint ships custom
+#: modelling code executed under ``trust_remote_code=True``, and its output
+#: types vary by revision, so the model is loaded at a fixed, reviewed commit
+#: rather than at the moving ``main`` head.
+_PROTST_REVISION = "e8f6eb2106fd35ed89e3f6a333db9208081a092f"
+
 #: Dimensionality of the text-aligned ``protein_feature`` projection.
 PROTEIN_FEATURE_DIM = 512
 
@@ -104,7 +110,9 @@ class ProtstBackend(EmbeddingBackend):
         emit("backend.protst.load_start", None, {"model_name": model_name}, "info")
         _ = torch.device(device)  # validate the device string early
         tokenizer = AutoTokenizer.from_pretrained(_ESM1B_TOKENIZER)
-        model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
+        model = AutoModel.from_pretrained(
+            model_name, revision=_PROTST_REVISION, trust_remote_code=True
+        )
         model.eval()
         model.to(device)
         emit("backend.protst.load_done", None, {"model_name": model_name}, "info")
