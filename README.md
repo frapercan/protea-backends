@@ -12,9 +12,16 @@ entry-points group, so a deployment ships only the backends it actually needs.
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](https://unlicense.org/)
 [![PyPI](https://img.shields.io/pypi/v/protea-backends.svg)](https://pypi.org/project/protea-backends/)
 
-**Status:** v0.1.0, production. All four backends (ESM family, T5/ProstT5, Ankh,
-ESM-C) are deployed and have been used to hydrate the canonical 8-PLM embedding
-pools. The plugin API may change across minor releases.
+**Status:** in use. All four backends (the ESM family, T5 and ProstT5, Ankh, and
+ESM-C) are deployed and have hydrated the canonical embedding pools. The plugin
+API may still change.
+Every internal dependency in this stack now names a commit rather than a
+branch, checked on each pull request. Updating one is a pull request here that
+moves the commit, gated by this repository's own checks.
+
+A definitive campaign run is being prepared for the doctoral thesis, and
+earlier experimental results are being recomputed rather than carried forward.
+No headline number is quoted in this file as current.
 
 ---
 
