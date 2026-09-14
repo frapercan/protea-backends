@@ -231,18 +231,122 @@ class EsmBackend(EmbeddingBackend):
         CLS + content + EOS, so the residue slice is ``[1:actual_len-1]``.
         """
         import torch
-        import torch.nn.functional as F  # noqa: N812  PyTorch convention
 
+        tokens, hidden_states, outputs = self._one_pass(
+            model, tokenizer, seq_str, config.max_length, device
+        )
+        chunks = self._reduce_one(hidden_states, tokens, config, seq_str)
+        del outputs, hidden_states
+        torch.cuda.empty_cache()
+        return chunks
+
+    def embed_chunks_multi(
+        self,
+        model: Any,
+        tokenizer: Any,
+        sequences: list[str],
+        configs: list[Any],
+        device: str,
+    ) -> list[list[list[ChunkEmbedding]]]:
+        """One forward pass per sequence, reduced once per config.
+
+        ``embed_chunks`` with the config pluralised, as PROTEA's
+        ``shared_pass_emitter`` documents: returns one
+        ``list[list[ChunkEmbedding]]`` per config, in the order the configs
+        arrived.
+
+        WHY THIS IS EXACT, and why it is not a claim that needs a test to hold.
+        ``model(..., output_hidden_states=True)`` is already unconditional here,
+        so a single pass materialises every layer whatever the config asked for;
+        layer selection and pooling are pure functions of ``hidden_states``, and
+        :meth:`_reduce_one` is the *same* function :meth:`embed_chunks` calls.
+        The two paths cannot drift because there is one reduction, not two.
+        What the shared pass removes is the repeated forward, nothing else.
+
+        Measured on the compute node before this was written (RTX 3060, fp16,
+        esm2_t33_650M): two separate passes over the same sequences produce
+        bit-identical output, at layer 0 and at layer 16, and the result does
+        not depend on the batch composition. Determinism is what makes the
+        shared pass equal to N separate ones; without it, N separate passes
+        would not equal each other either and the question would be moot.
+
+        Raises:
+            ValueError: if ``configs`` is empty, or if the configs disagree on
+                ``max_length``. That one field is the only part of a config
+                that touches the pass, because it is the only one read before
+                the tokeniser: configs that disagree on it do not share a pass
+                and grouping them would silently embed every one of them under
+                the first one's limit.
+        """
+        import torch
+
+        if not configs:
+            raise ValueError("embed_chunks_multi needs at least one config")
+        limits = {getattr(c, "max_length", None) for c in configs}
+        if len(limits) > 1:
+            raise ValueError(
+                f"[ESM] embed_chunks_multi was handed {len(configs)} configs with "
+                f"{len(limits)} different max_length values ({sorted(map(str, limits))}). "
+                "max_length is read before the tokeniser, so those configs do not "
+                "share a forward pass and grouping them would embed all of them "
+                "under the first one's limit."
+            )
+
+        per_config: list[list[list[ChunkEmbedding]]] = [[] for _ in configs]
+        with torch.no_grad():
+            for seq_str in sequences:
+                tokens, hidden_states, outputs = self._one_pass(
+                    model, tokenizer, seq_str, configs[0].max_length, device
+                )
+                for slot, config in zip(per_config, configs, strict=True):
+                    slot.append(self._reduce_one(hidden_states, tokens, config, seq_str))
+                del outputs, hidden_states
+                torch.cuda.empty_cache()
+        return per_config
+
+    @staticmethod
+    def _one_pass(
+        model: Any,
+        tokenizer: Any,
+        seq_str: str,
+        max_length: int | None,
+        device: str,
+    ) -> tuple[dict[str, Any], Any, Any]:
+        """Tokenise one sequence and run the encoder once.
+
+        The pass half of the split: everything here depends on the sequence and
+        on ``max_length``, and on nothing else a config carries. Returns the
+        tokens (the reduction needs ``attention_mask``), the hidden states, and
+        the raw outputs so the caller can free them.
+        """
         tokens = tokenizer(
             seq_str,
             return_tensors="pt",
             truncation=True,
-            max_length=config.max_length,
+            max_length=max_length,
             add_special_tokens=True,
         )
         tokens = {k: v.to(device) for k, v in tokens.items()}
         outputs = model(**tokens, output_hidden_states=True)
-        hidden_states = outputs.hidden_states
+        return tokens, outputs.hidden_states, outputs
+
+    @staticmethod
+    def _reduce_one(
+        hidden_states: Any,
+        tokens: dict[str, Any],
+        config: Any,
+        seq_str: str,
+    ) -> list[ChunkEmbedding]:
+        """Select layers, aggregate and pool one config's view of one pass.
+
+        The reduction half of the split, and a pure function of its arguments:
+        it reads ``hidden_states`` and never the model, which is what lets one
+        pass serve several configs. Lifted verbatim out of
+        :meth:`_embed_one_chunked` so both paths run this code and not two
+        copies of it.
+        """
+        import torch.nn.functional as F  # noqa: N812  PyTorch convention
+
         valid_layers = validate_layers(config.layer_indices, hidden_states, "ESM", seq_str[:20])
         if config.pooling == "cls":
             layer_tensors_1d = [
@@ -251,19 +355,15 @@ class EsmBackend(EmbeddingBackend):
             pooled = aggregate_layers(layer_tensors_1d, config.layer_agg)
             if config.normalize:
                 pooled = F.normalize(pooled.unsqueeze(0), p=2, dim=1).squeeze(0)
-            chunks = [ChunkEmbedding(0, None, pooled.cpu().numpy())]
-        else:
-            actual_len = int(tokens["attention_mask"].sum().item())
-            layer_tensors_2d = [
-                hidden_states[-(li + 1)][0, 1 : actual_len - 1, :].float() for li in valid_layers
-            ]
-            residues = aggregate_layers(layer_tensors_2d, config.layer_agg)
-            if config.normalize_residues:
-                residues = F.normalize(residues, p=2, dim=1)
-            chunks = chunk_and_pool(residues, config)
-        del outputs, hidden_states
-        torch.cuda.empty_cache()
-        return chunks
+            return [ChunkEmbedding(0, None, pooled.cpu().numpy())]
+        actual_len = int(tokens["attention_mask"].sum().item())
+        layer_tensors_2d = [
+            hidden_states[-(li + 1)][0, 1 : actual_len - 1, :].float() for li in valid_layers
+        ]
+        residues = aggregate_layers(layer_tensors_2d, config.layer_agg)
+        if config.normalize_residues:
+            residues = F.normalize(residues, p=2, dim=1)
+        return chunk_and_pool(residues, config)
 
     def _compute_residue_tensors(
         self,
