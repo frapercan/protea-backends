@@ -289,3 +289,161 @@ def test_embed_batch_mean_pool_still_returns_matrix() -> None:
     assert isinstance(out, np.ndarray)
     assert out.shape == (2, 8)
     assert out.dtype == np.float16
+
+
+class _CountingStubModel:
+    """Stub with several layers that records how many forward passes it ran.
+
+    The count is the point. A shared-pass implementation that is correct but
+    still runs one pass per config produces identical vectors and saves
+    nothing, so equality alone cannot tell the two apart.
+    """
+
+    def __init__(self, dim: int = 8, layers: int = 4) -> None:
+        import torch
+
+        self._dim = dim
+        self._layers = layers
+        self._param = torch.nn.Parameter(torch.zeros(1))
+        self.passes = 0
+
+    def parameters(self) -> Any:
+        yield self._param
+
+    def __call__(self, **tokens: Any) -> Any:
+        import torch
+
+        self.passes += 1
+        n = int(tokens["input_ids"].shape[1])
+        base = torch.arange(n * self._dim, dtype=torch.float32).reshape(1, n, self._dim)
+        # Each layer offset by its index so selecting a different layer is
+        # visible in the output rather than a no-op.
+        hs = tuple(base + float(k) for k in range(self._layers))
+        return type("Out", (), {"hidden_states": hs})()
+
+
+def _multi_cfg(layer: int, max_length: int | None = 1024) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        max_length=max_length,
+        layer_indices=[layer],
+        layer_agg="mean",
+        pooling="mean",
+        normalize=False,
+        normalize_residues=False,
+        use_chunking=False,
+        chunk_size=512,
+        chunk_overlap=0,
+    )
+
+
+@pytest.mark.skipif(not _TORCH_AVAILABLE, reason="torch not installed in test env")
+def test_embed_chunks_multi_runs_one_pass_per_sequence_not_per_config() -> None:
+    """The saving exists, and this is the only test that can show it.
+
+    Three configs over two sequences: two forward passes, not six. Every other
+    assertion here passes just as happily against an implementation that loops
+    ``embed_chunks`` per config, which is exactly the implementation this
+    change exists to replace.
+    """
+    model = _CountingStubModel(dim=8, layers=4)
+    out = plugin.embed_chunks_multi(
+        model=model,
+        tokenizer=_StubTokenizer(),
+        sequences=["MSEQ", "GG"],
+        configs=[_multi_cfg(0), _multi_cfg(1), _multi_cfg(2)],
+        device="cpu",
+    )
+    assert model.passes == 2, f"expected one pass per sequence, ran {model.passes}"
+    assert len(out) == 3
+    assert all(len(per_config) == 2 for per_config in out)
+
+
+@pytest.mark.skipif(not _TORCH_AVAILABLE, reason="torch not installed in test env")
+def test_embed_chunks_multi_matches_separate_passes_exactly() -> None:
+    """One pass reduced N times equals N passes reduced once, byte for byte.
+
+    Both paths call the same ``_reduce_one``, so this is a regression guard on
+    the split rather than a discovery: it fails if someone gives the shared
+    path a reduction of its own.
+    """
+    import numpy as np
+
+    configs = [_multi_cfg(0), _multi_cfg(2)]
+    sequences = ["MSEQ", "GG"]
+    shared = plugin.embed_chunks_multi(
+        model=_CountingStubModel(dim=8, layers=4),
+        tokenizer=_StubTokenizer(),
+        sequences=sequences,
+        configs=configs,
+        device="cpu",
+    )
+    for idx, cfg in enumerate(configs):
+        separate = plugin.embed_chunks(
+            model=_CountingStubModel(dim=8, layers=4),
+            tokenizer=_StubTokenizer(),
+            sequences=sequences,
+            config=cfg,
+            device="cpu",
+        )
+        for shared_seq, separate_seq in zip(shared[idx], separate, strict=True):
+            for shared_chunk, separate_chunk in zip(shared_seq, separate_seq, strict=True):
+                assert np.array_equal(shared_chunk.vector, separate_chunk.vector)
+
+
+@pytest.mark.skipif(not _TORCH_AVAILABLE, reason="torch not installed in test env")
+def test_embed_chunks_multi_returns_configs_in_the_order_they_arrived() -> None:
+    """Slot ``i`` holds config ``i``, which is what the caller indexes by."""
+    import numpy as np
+
+    ascending = plugin.embed_chunks_multi(
+        model=_CountingStubModel(dim=8, layers=4),
+        tokenizer=_StubTokenizer(),
+        sequences=["MSEQ"],
+        configs=[_multi_cfg(0), _multi_cfg(3)],
+        device="cpu",
+    )
+    descending = plugin.embed_chunks_multi(
+        model=_CountingStubModel(dim=8, layers=4),
+        tokenizer=_StubTokenizer(),
+        sequences=["MSEQ"],
+        configs=[_multi_cfg(3), _multi_cfg(0)],
+        device="cpu",
+    )
+    assert np.array_equal(ascending[0][0][0].vector, descending[1][0][0].vector)
+    assert np.array_equal(ascending[1][0][0].vector, descending[0][0][0].vector)
+    assert not np.array_equal(ascending[0][0][0].vector, ascending[1][0][0].vector)
+
+
+@pytest.mark.skipif(not _TORCH_AVAILABLE, reason="torch not installed in test env")
+def test_embed_chunks_multi_refuses_configs_that_do_not_share_a_pass() -> None:
+    """``max_length`` is read before the tokeniser, so it cannot be grouped.
+
+    Refusing is the whole point: accepting would embed both configs under the
+    first one's limit and report success, which is the silent-wrong-answer
+    shape this repository's guards exist to prevent.
+    """
+    model = _CountingStubModel(dim=8, layers=4)
+    with pytest.raises(ValueError, match="max_length"):
+        plugin.embed_chunks_multi(
+            model=model,
+            tokenizer=_StubTokenizer(),
+            sequences=["MSEQ"],
+            configs=[_multi_cfg(0, max_length=1024), _multi_cfg(1, max_length=512)],
+            device="cpu",
+        )
+    assert model.passes == 0, "refused before spending a forward pass, not after"
+
+
+@pytest.mark.skipif(not _TORCH_AVAILABLE, reason="torch not installed in test env")
+def test_embed_chunks_multi_refuses_an_empty_config_list() -> None:
+    """No config means no output slot to write into; say so rather than return []."""
+    with pytest.raises(ValueError, match="at least one config"):
+        plugin.embed_chunks_multi(
+            model=_CountingStubModel(dim=8, layers=4),
+            tokenizer=_StubTokenizer(),
+            sequences=["MSEQ"],
+            configs=[],
+            device="cpu",
+        )
