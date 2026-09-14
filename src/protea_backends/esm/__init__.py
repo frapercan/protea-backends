@@ -271,27 +271,11 @@ class EsmBackend(EmbeddingBackend):
         would not equal each other either and the question would be moot.
 
         Raises:
-            ValueError: if ``configs`` is empty, or if the configs disagree on
-                ``max_length``. That one field is the only part of a config
-                that touches the pass, because it is the only one read before
-                the tokeniser: configs that disagree on it do not share a pass
-                and grouping them would silently embed every one of them under
-                the first one's limit.
+            ValueError: see :func:`_refuse_configs_that_do_not_share_a_pass`.
         """
         import torch
 
-        if not configs:
-            raise ValueError("embed_chunks_multi needs at least one config")
-        limits = {getattr(c, "max_length", None) for c in configs}
-        if len(limits) > 1:
-            raise ValueError(
-                f"[ESM] embed_chunks_multi was handed {len(configs)} configs with "
-                f"{len(limits)} different max_length values ({sorted(map(str, limits))}). "
-                "max_length is read before the tokeniser, so those configs do not "
-                "share a forward pass and grouping them would embed all of them "
-                "under the first one's limit."
-            )
-
+        _refuse_configs_that_do_not_share_a_pass(configs)
         per_config: list[list[list[ChunkEmbedding]]] = [[] for _ in configs]
         with torch.no_grad():
             for seq_str in sequences:
@@ -430,3 +414,35 @@ def _aggregate_layers(
 #: Module-level plugin instance discovered via the
 #: ``protea.backends`` entry_points group.
 plugin = EsmBackend()
+
+
+def _refuse_configs_that_do_not_share_a_pass(configs: list[Any]) -> None:
+    """Refuse a group whose members do not all come out of one forward pass.
+
+    ``max_length`` is the only part of a config that touches the pass, because
+    it is the only one read before the tokeniser: everything else a config
+    carries (which layers, how they aggregate, how residues pool, whether to
+    normalise, how to chunk) is applied to ``hidden_states`` afterwards and so
+    groups freely.
+
+    The refusal names that one field rather than listing what is allowed. An
+    exclusion list goes stale the moment somebody adds a field, and a guard
+    that silently stops covering a new field is worse than no guard: configs
+    that disagree on the limit would all be embedded under the first one's,
+    and the job would report success.
+
+    Raises:
+        ValueError: if ``configs`` is empty, or if its members disagree on
+            ``max_length``.
+    """
+    if not configs:
+        raise ValueError("embed_chunks_multi needs at least one config")
+    limits = {getattr(c, "max_length", None) for c in configs}
+    if len(limits) > 1:
+        raise ValueError(
+            f"[ESM] embed_chunks_multi was handed {len(configs)} configs with "
+            f"{len(limits)} different max_length values ({sorted(map(str, limits))}). "
+            "max_length is read before the tokeniser, so those configs do not "
+            "share a forward pass and grouping them would embed all of them "
+            "under the first one's limit."
+        )
