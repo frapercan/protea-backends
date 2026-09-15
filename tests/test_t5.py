@@ -89,14 +89,14 @@ class _StubBatch(dict):  # type: ignore[type-arg]
 class _StubTokenizer:
     """T5 tokenizer stub returning deterministic padded ids + mask.
 
-    Mirrors :meth:`T5Tokenizer.batch_encode_plus` with ``padding="longest"``
+    Mirrors :meth:`T5Tokenizer.__call__` with ``padding="longest"``
     and ``add_special_tokens=True``: each sequence is space-joined first
     (the backend prefixes ``<AA2fold>`` for ProstT5), so token count per
     sequence is ``n_words + 1`` (words + trailing EOS). The shorter
     sequence is right-padded so ``attention_mask`` masks the difference.
     """
 
-    def batch_encode_plus(
+    def __call__(
         self,
         processed: list[str],
         *,
@@ -226,7 +226,7 @@ class _ChunkedStubTokenizer:
     sequences right-padded with ``attention_mask=0``.
     """
 
-    def batch_encode_plus(
+    def __call__(
         self,
         processed: Any,
         *,

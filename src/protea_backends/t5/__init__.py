@@ -273,7 +273,7 @@ class T5Backend(EmbeddingBackend):
         processed = [("<AA2fold> " if use_aa2fold else "") + " ".join(c) for c in cleaned]
 
         device_obj = next(model.parameters()).device
-        inputs = tokenizer.batch_encode_plus(
+        inputs = tokenizer(
             processed,
             padding="longest",
             truncation=True,
@@ -318,7 +318,7 @@ def _t5_tokenise(
     if mode.split_into_words:
         # Ankh path: list-of-chars with is_split_into_words=True so the
         # tokeniser treats each residue as one word and never falls back to <unk>.
-        return tokenizer.batch_encode_plus(
+        return tokenizer(
             [list(c) for c in cleaned],
             padding="longest",
             truncation=True,
@@ -328,7 +328,7 @@ def _t5_tokenise(
             return_tensors="pt",
         )
     processed = [("<AA2fold> " if use_aa2fold else "") + " ".join(c) for c in cleaned]
-    return tokenizer.batch_encode_plus(
+    return tokenizer(
         processed,
         padding="longest",
         truncation=True,

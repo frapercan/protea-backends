@@ -79,7 +79,7 @@ _ANKH_MODE = T5Mode(use_aa2fold=False, split_into_words=True)
 
 
 class AnkhBackend(EmbeddingBackend):
-    """Ankh family backend (HuggingFace T5EncoderModel + AutoTokenizer)."""
+    """Ankh family backend (HuggingFace T5EncoderModel + PreTrainedTokenizerFast)."""
 
     name = "ankh"
 
@@ -89,25 +89,38 @@ class AnkhBackend(EmbeddingBackend):
         device: str,
         emit: Any,
     ) -> tuple[Any, Any]:
-        """Load an Ankh checkpoint + AutoTokenizer, move to ``device``.
+        """Load an Ankh checkpoint + tokeniser, move to ``device``.
 
         ``model_name`` is a HuggingFace identifier (e.g.
         ``"ElnaggarLab/ankh-base"`` or ``"ElnaggarLab/ankh-large"``).
         Returns ``(model, tokenizer)``. **bfloat16** on CUDA (FP16
         LayerNorm collapses to NaN), FP32 on CPU.
 
-        AutoTokenizer is used (resolves to T5TokenizerFast) instead of
-        hardcoding T5Tokenizer; some Ankh revisions changed the
-        tokenizer class and AutoTokenizer rides those changes.
+        The tokeniser is loaded as ``PreTrainedTokenizerFast``, NOT through
+        ``AutoTokenizer``. The old reasoning -- AutoTokenizer resolves to
+        T5TokenizerFast and rides any tokenizer-class change in an Ankh
+        revision -- stopped holding in transformers 5, where AutoTokenizer
+        resolves to ``T5Tokenizer``, a ``TokenizersBackend`` that rebuilds the
+        tokeniser from the vocabulary and hardcodes
+        ``Metaspace(prepend_scheme="always")``, discarding the
+        ``pre_tokenizer: null`` Ankh ships in its ``tokenizer.json``. Ankh's
+        vocabulary is bare letters with no U+2581, so every prefixed residue
+        misses: a 78-residue sequence tokenises to 157 tokens with ``<unk>``
+        before each one, and nothing raises.
+
+        Loading the fast class directly honours the shipped ``tokenizer.json``.
+        Verified to produce identical ids under transformers 4.48.1 and 5.17.0
+        for ankh-base and ankh-large; under 4.x it logs a class-mismatch
+        warning and tokenises identically anyway.
         """
         import torch
-        from transformers import AutoTokenizer, T5EncoderModel
+        from transformers import PreTrainedTokenizerFast, T5EncoderModel
 
         emit("backend.ankh.load_start", None, {"model_name": model_name}, "info")
         device_obj = torch.device(device)
         # Ankh-specific: bfloat16 on CUDA, fp32 on CPU.
         dtype = torch.bfloat16 if device_obj.type == "cuda" else torch.float32
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer = PreTrainedTokenizerFast.from_pretrained(model_name)
         model = T5EncoderModel.from_pretrained(
             model_name,
             output_hidden_states=True,
@@ -267,7 +280,7 @@ class AnkhBackend(EmbeddingBackend):
         device_obj = next(model.parameters()).device
 
         # Ankh-specific: list-of-chars with is_split_into_words=True.
-        inputs = tokenizer.batch_encode_plus(
+        inputs = tokenizer(
             [list(c) for c in cleaned],
             padding="longest",
             truncation=True,

@@ -76,13 +76,13 @@ class _StubBatch(dict):  # type: ignore[type-arg]
 class _StubTokenizer:
     """Ankh tokenizer stub.
 
-    Mirrors :meth:`T5TokenizerFast.batch_encode_plus` with
+    Mirrors :meth:`T5TokenizerFast.__call__` with
     ``is_split_into_words=True``: each amino-acid character becomes
     one token plus one trailing EOS. The shorter sequence is
     right-padded so the attention mask correctly masks the difference.
     """
 
-    def batch_encode_plus(
+    def __call__(
         self,
         chars_lists: list[list[str]],
         *,
@@ -186,7 +186,7 @@ class _ChunkedStubTokenizer:
     are right-padded with ``attention_mask=0``.
     """
 
-    def batch_encode_plus(
+    def __call__(
         self,
         chars_lists: Any,
         *,
