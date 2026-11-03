@@ -231,6 +231,59 @@ class AnkhBackend(EmbeddingBackend):
             attention_mask=masks,
         )
 
+    def embed_batch_per_layer(
+        self,
+        model: Any,
+        tokenizer: Any,
+        sequences: list[str],
+        *,
+        emit: Any,
+        hidden_state_indices: list[int],
+    ) -> list[np.ndarray[Any, Any]]:
+        """Exact attention at any length, the selected hidden states kept apart (ADR-D51).
+
+        Returns one ``(L_i, n_layers, hidden_dim)`` ``float32`` array per sequence, in input
+        order, EOS stripped, with the layers in the order of ``hidden_state_indices``. Those
+        are Hugging Face's ``hidden_states`` indices (0 the embeddings, the last one the
+        final norm), not PROTEA's backwards ``layer_indices``.
+
+        Unlike :meth:`embed_batch_per_residue` nothing is averaged across layers and nothing
+        is cast to half precision, because a residue vocabulary standardises each layer
+        separately and rounds afterwards. The attention is
+        :class:`protea_backends.ankh.exact.ExactAnkh`, so memory grows linearly with length
+        and no sequence is truncated. It is compiled on CUDA and eager elsewhere, and the
+        batches hold up to :data:`protea_backends.ankh.exact.TOKEN_BUDGET` tokens, the policy
+        the residue vocabulary was trained under.
+        """
+        from protea_backends.ankh.exact import TOKEN_BUDGET, ExactAnkh, encode_per_layer
+
+        if not sequences:
+            return []
+        on_cuda = next(model.parameters()).device.type == "cuda"
+        exact = getattr(model, "_protea_exact_ankh", None)
+        if exact is None:
+            exact = ExactAnkh(model, compiled=on_cuda)
+            model._protea_exact_ankh = exact
+        out: list[np.ndarray[Any, Any] | None] = [None] * len(sequences)
+        for i, states in encode_per_layer(
+            exact, tokenizer, sequences, hidden_state_indices, TOKEN_BUDGET
+        ):
+            out[i] = states
+        emit(
+            "backend.ankh.embed_per_layer_done",
+            None,
+            {
+                "n_sequences": len(sequences),
+                "total_residues": int(sum(s.shape[0] for s in out if s is not None)),
+                "hidden_state_indices": list(hidden_state_indices),
+            },
+            "info",
+        )
+        missing = [i for i, s in enumerate(out) if s is None]
+        if missing:
+            raise RuntimeError(f"no states came back for sequences {missing[:5]}")
+        return cast("list[np.ndarray[Any, Any]]", out)
+
     def embed_chunks(
         self,
         model: Any,
