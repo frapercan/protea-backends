@@ -19,4 +19,3 @@ coverage.xml
 *.swp
 
 # Poetry
-poetry.lock

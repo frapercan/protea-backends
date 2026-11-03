@@ -18,6 +18,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install poetry
         run: pipx install poetry
+      - name: The lock matches pyproject
+        run: poetry check --lock
       - name: Install dependencies
         run: poetry install --with dev
       - name: Lint (ruff)
