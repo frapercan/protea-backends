@@ -257,15 +257,15 @@ class ExactAnkh:
 
 
 def length_batches(
-    lengths: Sequence[int] | np.ndarray, budget: int = TOKEN_BUDGET
-) -> list[np.ndarray]:
+    lengths: Sequence[int] | np.ndarray[Any, Any], budget: int = TOKEN_BUDGET
+) -> list[np.ndarray[Any, Any]]:
     """Indices grouped by ascending length so that rows times padded length stays within budget.
 
     A sequence longer than the budget goes alone.
     """
     lengths = np.asarray(lengths)
     order = np.argsort(lengths, kind="stable")
-    out: list[np.ndarray] = []
+    out: list[np.ndarray[Any, Any]] = []
     cur: list[int] = []
     for i in order:
         n = int(lengths[i]) + 1
@@ -284,7 +284,7 @@ def encode_per_layer(
     sequences: Sequence[str],
     hidden_state_indices: Sequence[int],
     token_budget: int = TOKEN_BUDGET,
-) -> Iterator[tuple[int, np.ndarray]]:
+) -> Iterator[tuple[int, np.ndarray[Any, Any]]]:
     """Every sequence's states, by length batches.
 
     Yields ``(index into sequences, states)`` with ``states`` a ``(L, n_layers, d)`` float32
