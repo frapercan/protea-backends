@@ -18,5 +18,4 @@ coverage.xml
 .idea/
 *.swp
 
-# Poetry
-poetry.lock
+# Poetry: poetry.lock is committed, and CI checks it matches pyproject
