@@ -165,6 +165,7 @@ def _chunks(monkeypatch: pytest.MonkeyPatch, threshold: int, config: Any) -> lis
         {"pooling": "cls"},
         {"pooling": "cls", "layer_indices": [0, 1], "normalize": True},
         {"layer_indices": [0, 2], "layer_agg": "concat"},
+        {"layer_indices": [2, 0], "layer_agg": "concat", "pooling": "mean"},
         {"layer_indices": [2, 0, 2], "layer_agg": "last"},
         {"normalize_residues": True},
         {"use_chunking": True, "chunk_size": 16, "chunk_overlap": 4},
@@ -207,6 +208,25 @@ def test_the_bank_path_routes_by_the_length_the_tokeniser_keeps(
     seen.clear()
     plugin.embed_chunks(_tiny(), _Tokenizer(), SEQS, _config(max_length=8), "cpu")
     assert seen == [], "a sequence cut to 7 residues stays on the old forward"
+
+
+def test_concat_reads_the_layers_sorted_on_the_exact_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``validate_layers`` sorts and deduplicates, and with ``concat`` the order is the layout.
+
+    A deployed configuration concatenates ``[46, 38, 26, 8, 0]``; both routes read it as
+    ``[0, 8, 26, 38, 46]``, so the first block of the vector is the last layer's.
+    """
+    width = 64
+    both = _config(layer_indices=[2, 0], layer_agg="concat", pooling="mean")
+    joined = _chunks(monkeypatch, 10, both)
+    last = _chunks(monkeypatch, 10, _config(layer_indices=[0], pooling="mean"))
+    third = _chunks(monkeypatch, 10, _config(layer_indices=[2], pooling="mean"))
+    for j, l0, l2 in zip(joined, last, third, strict=True):
+        assert j[0].vector.shape == (2 * width,)
+        assert np.allclose(j[0].vector[:width], l0[0].vector, rtol=1e-5, atol=1e-6)
+        assert np.allclose(j[0].vector[width:], l2[0].vector, rtol=1e-5, atol=1e-6)
 
 
 def test_the_bank_has_no_second_door() -> None:
