@@ -86,9 +86,13 @@ _ANKH_MODE = T5Mode(use_aa2fold=False, split_into_words=True)
 #: residues and failed from 8,382 on, and 161 sequences of the corpus, up to 35,991
 #: residues, never entered the bank that every per-residue pass reads. The exact path
 #: computes the same Ankh with memory linear in the length (PROTEA ADR-D51, gate 3).
-#: Below this length both fit, and keeping the old forward there leaves every vector
-#: already in a bank reproducible by the code that wrote it.
-EXACT_ABOVE_RESIDUES = 4096
+#:
+#: Why this number: 8,259 is the longest sequence in the deployed bank (``f3a7fe16``) and
+#: 8,382 the shortest that never entered it; nothing in the corpus lies between them. So
+#: every vector already in the bank keeps the route that wrote it, and only the sequences
+#: the old forward could not hold take the new one. A lower threshold would move stored
+#: vectors to the exact route (1,348 of them at 4,096).
+EXACT_ABOVE_RESIDUES = 8259
 
 
 class AnkhBackend(EmbeddingBackend):
