@@ -77,6 +77,19 @@ from protea_backends.t5 import T5Mode, embed_chunks_with_mode
 #: and ruff B008 does not flag a callable default argument.
 _ANKH_MODE = T5Mode(use_aa2fold=False, split_into_words=True)
 
+#: Sequences longer than this many residues are embedded with exact attention
+#: (:class:`protea_backends.ankh.exact.ExactAnkh`) by :meth:`AnkhBackend.embed_batch` and
+#: :meth:`AnkhBackend.embed_batch_per_residue`; shorter ones keep the Hugging Face forward.
+#:
+#: Why: the Hugging Face forward materialises the attention, so its memory grows with the
+#: square of the length. On the 12 GB card of the GPU node it stored proteins up to 8,259
+#: residues and failed from 8,382 on, and 161 sequences of the corpus, up to 35,991
+#: residues, never entered the bank that every per-residue pass reads. The exact path
+#: computes the same Ankh with memory linear in the length (PROTEA ADR-D51, gate 3).
+#: Below this length both fit, and keeping the old forward there leaves every vector
+#: already in a bank reproducible by the code that wrote it.
+EXACT_ABOVE_RESIDUES = 4096
+
 
 class AnkhBackend(EmbeddingBackend):
     """Ankh family backend (HuggingFace T5EncoderModel + PreTrainedTokenizerFast)."""
@@ -162,7 +175,7 @@ class AnkhBackend(EmbeddingBackend):
         if not sequences:
             return np.zeros((0, 0), dtype=np.float16)
 
-        residue_tensors = self._compute_residue_tensors(
+        residue_tensors = self._residue_tensors(
             model, tokenizer, sequences, layers=layers, layer_agg=layer_agg
         )
 
@@ -209,7 +222,7 @@ class AnkhBackend(EmbeddingBackend):
                 attention_mask=[],
             )
 
-        residue_tensors = self._compute_residue_tensors(
+        residue_tensors = self._residue_tensors(
             model, tokenizer, sequences, layers=layers, layer_agg="mean"
         )
 
@@ -309,6 +322,82 @@ class AnkhBackend(EmbeddingBackend):
         return embed_chunks_with_mode(
             model, tokenizer, sequences, config, device, _ANKH_MODE
         )
+
+    def _residue_tensors(
+        self,
+        model: Any,
+        tokenizer: Any,
+        sequences: list[str],
+        *,
+        layers: list[int] | None,
+        layer_agg: str,
+    ) -> list[Any]:
+        """One residue tensor per sequence, in input order, routed by length.
+
+        Sequences up to :data:`EXACT_ABOVE_RESIDUES` residues go through the Hugging Face
+        forward (:meth:`_compute_residue_tensors`); longer ones through exact attention
+        (:meth:`_exact_residue_tensors`), which never runs out of memory on length alone.
+        """
+        long_ix = [i for i, seq in enumerate(sequences) if len(seq) > EXACT_ABOVE_RESIDUES]
+        if not long_ix:
+            return self._compute_residue_tensors(
+                model, tokenizer, sequences, layers=layers, layer_agg=layer_agg
+            )
+        short_ix = [i for i in range(len(sequences)) if i not in set(long_ix)]
+        out: list[Any] = [None] * len(sequences)
+        if short_ix:
+            short = self._compute_residue_tensors(
+                model,
+                tokenizer,
+                [sequences[i] for i in short_ix],
+                layers=layers,
+                layer_agg=layer_agg,
+            )
+            for i, t in zip(short_ix, short, strict=True):
+                out[i] = t
+        exact = self._exact_residue_tensors(
+            model, tokenizer, [sequences[i] for i in long_ix], layers=layers, layer_agg=layer_agg
+        )
+        for i, t in zip(long_ix, exact, strict=True):
+            out[i] = t
+        return out
+
+    def _exact_residue_tensors(
+        self,
+        model: Any,
+        tokenizer: Any,
+        sequences: list[str],
+        *,
+        layers: list[int] | None,
+        layer_agg: str,
+    ) -> list[Any]:
+        """The residue tensors :meth:`_compute_residue_tensors` would give, by exact attention.
+
+        PROTEA's ``layer_indices`` count backwards from the last hidden state (0 is the final
+        norm's output), while :func:`protea_backends.ankh.exact.encode_per_layer` takes Hugging
+        Face's forward indices (0 the embeddings), so ``li`` maps to ``num_layers - li``. The
+        selected layers are then aggregated with the same :func:`stack_and_aggregate`. The
+        states arrive in single precision (an exact conversion of the bfloat16 values), so the
+        mean across layers is taken in single precision rather than in the model's dtype, a
+        difference far below the half-precision rounding of the stored vector.
+        """
+        import torch
+
+        from protea_backends.ankh.exact import TOKEN_BUDGET, ExactAnkh, encode_per_layer
+
+        exact = getattr(model, "_protea_exact_ankh", None)
+        if exact is None:
+            exact = ExactAnkh(model, compiled=next(model.parameters()).device.type == "cuda")
+            model._protea_exact_ankh = exact
+        last = int(model.config.num_layers)
+        use_layers = layers if layers else [0]
+        forward = [last - li for li in use_layers]
+        out: list[Any] = [None] * len(sequences)
+        for i, states in encode_per_layer(exact, tokenizer, sequences, forward, TOKEN_BUDGET):
+            per_layer = torch.from_numpy(states)  # (L, n_layers, D)
+            views = [per_layer[:, j, :].unsqueeze(0) for j in range(per_layer.shape[1])]
+            out[i] = stack_and_aggregate(views, layer_agg)[0].float()
+        return out
 
     def _compute_residue_tensors(
         self,
