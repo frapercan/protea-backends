@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -45,7 +46,7 @@ def _quiet(*_a: Any, **_k: Any) -> None:
     return None
 
 
-def _batch(monkeypatch: pytest.MonkeyPatch, threshold: int, **kw: Any) -> np.ndarray:
+def _batch(monkeypatch: pytest.MonkeyPatch, threshold: int, **kw: Any) -> npt.NDArray[Any]:
     monkeypatch.setattr(ankh, "EXACT_ABOVE_RESIDUES", threshold)
     return plugin.embed_batch(_tiny(), _Tokenizer(), SEQS, emit=_quiet, **kw)
 
