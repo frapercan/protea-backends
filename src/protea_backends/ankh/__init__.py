@@ -239,8 +239,6 @@ class AnkhBackend(EmbeddingBackend):
         *,
         emit: Any,
         hidden_state_indices: list[int],
-        token_budget: int = 16384,
-        compiled: bool | None = None,
     ) -> list[np.ndarray[Any, Any]]:
         """Exact attention at any length, the selected hidden states kept apart (ADR-D51).
 
@@ -253,22 +251,22 @@ class AnkhBackend(EmbeddingBackend):
         is cast to half precision, because a residue vocabulary standardises each layer
         separately and rounds afterwards. The attention is
         :class:`protea_backends.ankh.exact.ExactAnkh`, so memory grows linearly with length
-        and no sequence is truncated. ``compiled`` defaults to True on CUDA.
+        and no sequence is truncated. It is compiled on CUDA and eager elsewhere, and the
+        batches hold up to :data:`protea_backends.ankh.exact.TOKEN_BUDGET` tokens, the policy
+        the residue vocabulary was trained under.
         """
-        from protea_backends.ankh.exact import ExactAnkh, encode_per_layer
+        from protea_backends.ankh.exact import TOKEN_BUDGET, ExactAnkh, encode_per_layer
 
         if not sequences:
             return []
         on_cuda = next(model.parameters()).device.type == "cuda"
-        use_compiled = on_cuda if compiled is None else compiled
-        key = "_protea_exact_ankh_compiled" if use_compiled else "_protea_exact_ankh_eager"
-        exact = getattr(model, key, None)
+        exact = getattr(model, "_protea_exact_ankh", None)
         if exact is None:
-            exact = ExactAnkh(model, compiled=use_compiled)
-            setattr(model, key, exact)
+            exact = ExactAnkh(model, compiled=on_cuda)
+            model._protea_exact_ankh = exact
         out: list[np.ndarray[Any, Any] | None] = [None] * len(sequences)
         for i, states in encode_per_layer(
-            exact, tokenizer, sequences, hidden_state_indices, token_budget
+            exact, tokenizer, sequences, hidden_state_indices, TOKEN_BUDGET
         ):
             out[i] = states
         emit(
