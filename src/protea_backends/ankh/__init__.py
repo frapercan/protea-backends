@@ -19,7 +19,7 @@ Heavy ML deps (torch, transformers) are imported lazily; install the
 runtime stack with ``pip install protea-backends[ankh]`` (extras land
 in F2A.5 of master plan v3).
 
-Three output paths:
+Four output paths:
 
 * :meth:`AnkhBackend.embed_batch` returns the historical ``(B, D)``
   mean-pooled ``float16`` matrix.
@@ -37,6 +37,8 @@ Three output paths:
   Internally delegates to :func:`protea_backends.t5.embed_chunks_with_mode`
   with ``use_aa2fold=False, split_into_words=True`` to reuse the
   shared T5 batched pipeline without code duplication.
+* :meth:`AnkhBackend.embed_chunks_padded` is that path under the name every
+  backend with a one-pass padded batch answers to.
 
 Example::
 
@@ -362,6 +364,24 @@ class AnkhBackend(EmbeddingBackend):
             lambda ix: self._exact_chunks(model, tokenizer, [sequences[i] for i in ix], config),
         )
         return out
+
+    def embed_chunks_padded(
+        self,
+        model: Any,
+        tokenizer: Any,
+        sequences: list[str],
+        config: Any,
+        device: str,
+    ) -> list[list[ChunkEmbedding]]:
+        """Embed ``sequences`` in ONE padded forward pass; PROTEA's chunked output.
+
+        :meth:`embed_chunks` already is one for every sequence that keeps up to
+        :data:`EXACT_ABOVE_RESIDUES` residues: the shared T5 pipeline pads the
+        batch on the right and runs the encoder once under the attention mask.
+        A longer one goes through exact attention there, and here too. This is
+        that path under the name every backend with a padded pass answers to.
+        """
+        return self.embed_chunks(model, tokenizer, sequences, config, device)
 
     def _exact_chunks(
         self, model: Any, tokenizer: Any, sequences: list[str], config: Any
