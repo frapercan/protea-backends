@@ -318,13 +318,13 @@ class EsmBackend(EmbeddingBackend):
             ValueError: if the tokeniser pads on the left, where the span
                 :meth:`_reduce_one` reads would start at the padding.
         """
-        import torch
-
         if not sequences:
             return []
         side = getattr(tokenizer, "padding_side", "right")
         if side != "right":
             raise ValueError(f"[ESM] a padded pass needs right padding; the tokeniser pads {side}")
+        import torch
+
         with torch.no_grad():
             tokens = tokenizer(
                 list(sequences),
