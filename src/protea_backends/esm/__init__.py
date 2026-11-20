@@ -10,7 +10,7 @@ for a torch import unless the backend is actually used.
 Install the runtime stack with ``pip install protea-backends[esm]``
 (extras land in F2A.5 of master plan v3).
 
-Three output paths:
+Four output paths:
 
 * :meth:`EsmBackend.embed_batch` returns the historical ``(B, D)``
   mean-pooled ``float16`` matrix.
@@ -26,6 +26,9 @@ Three output paths:
   selection / aggregation, per-residue normalisation, chunking, and
   ``mean`` / ``max`` / ``mean_max`` / ``cls`` pooling. ``protea-core``
   dispatches to it from ``compute_embeddings._dispatch_embed``.
+* :meth:`EsmBackend.embed_chunks_padded` returns the same output from
+  ONE padded forward pass over the whole batch, the throughput path for
+  a bank computed on a large card.
 
 Example::
 
@@ -288,6 +291,59 @@ class EsmBackend(EmbeddingBackend):
                 torch.cuda.empty_cache()
         return per_config
 
+    def embed_chunks_padded(
+        self,
+        model: Any,
+        tokenizer: Any,
+        sequences: list[str],
+        config: Any,
+        device: str,
+    ) -> list[list[ChunkEmbedding]]:
+        """Embed ``sequences`` in ONE padded forward pass; PROTEA's chunked output.
+
+        :meth:`embed_chunks` runs one sequence per pass, which keeps a bank byte
+        reproducible across processes and leaves a large card mostly idle. This
+        is the throughput path. The tokeniser pads the batch to its longest
+        member on the right, so a residue keeps its position; the encoder runs
+        once under the attention mask; and every row goes through the SAME
+        reduction as :meth:`embed_chunks` (:meth:`_reduce_one` with its row),
+        which reads only that row's own span. A row's vector therefore differs
+        from the one-sequence pass by floating-point rounding (the kernels see
+        other shapes), never by anything a padded position contributes.
+
+        The caller sizes the batch: sorting by length keeps the padding small,
+        and a token budget keeps the attention scores within the card.
+
+        Raises:
+            ValueError: if the tokeniser pads on the left, where the span
+                :meth:`_reduce_one` reads would start at the padding.
+        """
+        if not sequences:
+            return []
+        side = getattr(tokenizer, "padding_side", "right")
+        if side != "right":
+            raise ValueError(f"[ESM] a padded pass needs right padding; the tokeniser pads {side}")
+        import torch
+
+        with torch.no_grad():
+            tokens = tokenizer(
+                list(sequences),
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=config.max_length,
+                add_special_tokens=True,
+            )
+            tokens = {k: v.to(device) for k, v in tokens.items()}
+            outputs = model(**tokens, output_hidden_states=True)
+            hidden_states = outputs.hidden_states
+            out = [
+                self._reduce_one(hidden_states, tokens, config, seq_str, row=row)
+                for row, seq_str in enumerate(sequences)
+            ]
+        del outputs, hidden_states
+        return out
+
     @staticmethod
     def _one_pass(
         model: Any,
@@ -320,6 +376,7 @@ class EsmBackend(EmbeddingBackend):
         tokens: dict[str, Any],
         config: Any,
         seq_str: str,
+        row: int = 0,
     ) -> list[ChunkEmbedding]:
         """Select layers, aggregate and pool one config's view of one pass.
 
@@ -327,22 +384,24 @@ class EsmBackend(EmbeddingBackend):
         it reads ``hidden_states`` and never the model, which is what lets one
         pass serve several configs. Lifted verbatim out of
         :meth:`_embed_one_chunked` so both paths run this code and not two
-        copies of it.
+        copies of it. ``row`` is the sequence's row in a padded pass
+        (:meth:`embed_chunks_padded`); a one-sequence pass has only row 0, and
+        its own attention mask bounds the span, so padding never enters it.
         """
         import torch.nn.functional as F  # noqa: N812  PyTorch convention
 
         valid_layers = validate_layers(config.layer_indices, hidden_states, "ESM", seq_str[:20])
         if config.pooling == "cls":
             layer_tensors_1d = [
-                hidden_states[-(li + 1)][0, 0, :].float() for li in valid_layers
+                hidden_states[-(li + 1)][row, 0, :].float() for li in valid_layers
             ]
             pooled = aggregate_layers(layer_tensors_1d, config.layer_agg)
             if config.normalize:
                 pooled = F.normalize(pooled.unsqueeze(0), p=2, dim=1).squeeze(0)
             return [ChunkEmbedding(0, None, pooled.cpu().numpy())]
-        actual_len = int(tokens["attention_mask"].sum().item())
+        actual_len = int(tokens["attention_mask"][row].sum().item())
         layer_tensors_2d = [
-            hidden_states[-(li + 1)][0, 1 : actual_len - 1, :].float() for li in valid_layers
+            hidden_states[-(li + 1)][row, 1 : actual_len - 1, :].float() for li in valid_layers
         ]
         residues = aggregate_layers(layer_tensors_2d, config.layer_agg)
         if config.normalize_residues:

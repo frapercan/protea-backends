@@ -19,7 +19,7 @@ Heavy ML deps (torch, transformers) are imported lazily inside
 Install runtime stack with ``pip install protea-backends[t5]``
 (extras land in F2A.5 of master plan v3).
 
-Three output paths:
+Four output paths:
 
 * :meth:`T5Backend.embed_batch` returns the historical ``(B, D)``
   mean-pooled ``float16`` matrix.
@@ -34,6 +34,8 @@ Three output paths:
   selection / aggregation, per-residue normalisation, chunking, and
   ``mean`` / ``max`` / ``mean_max`` / ``cls`` pooling. ``protea-core``
   dispatches to it from ``compute_embeddings._dispatch_embed``.
+* :meth:`T5Backend.embed_chunks_padded` is that path under the name every
+  backend with a one-pass padded batch answers to.
 
 Example::
 
@@ -245,6 +247,24 @@ class T5Backend(EmbeddingBackend):
         return embed_chunks_with_mode(
             model, tokenizer, sequences, config, device, _DEFAULT_T5_MODE
         )
+
+    def embed_chunks_padded(
+        self,
+        model: Any,
+        tokenizer: Any,
+        sequences: list[str],
+        config: Any,
+        device: str,
+    ) -> list[list[ChunkEmbedding]]:
+        """Embed ``sequences`` in ONE padded forward pass; PROTEA's chunked output.
+
+        :meth:`embed_chunks` already is one: the T5 pipeline has always padded
+        the batch it is handed (``padding="longest"``, on the right) and run the
+        encoder once under the attention mask, reading each row's own span. This
+        is that path under the name every backend with a padded pass answers to,
+        so a caller asks for it without knowing which backends always had one.
+        """
+        return self.embed_chunks(model, tokenizer, sequences, config, device)
 
     def _compute_residue_tensors(
         self,
