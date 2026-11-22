@@ -2745,8 +2745,8 @@ pydantic = ">=2.5"
 [package.source]
 type = "git"
 url = "https://github.com/frapercan/protea-contracts.git"
-reference = "dd335182a6624a82e3285df9d04a7ace3402effd"
-resolved_reference = "dd335182a6624a82e3285df9d04a7ace3402effd"
+reference = "f7008c90639c252dfcd674b22c20e8e406a7485d"
+resolved_reference = "f7008c90639c252dfcd674b22c20e8e406a7485d"
 
 [[package]]
 name = "psutil"
@@ -4520,4 +4520,4 @@ t5 = ["sentencepiece", "torch", "transformers"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "288de30555dcfadb976184d6d83d3305651b42598a19cefa5ed7c99b7123ce7d"
+content-hash = "b700f67685a0e9f03e81c91b6e1a5f2d8729a60094045a0ba28312a5703f0ae1"
