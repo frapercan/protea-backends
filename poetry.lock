@@ -2729,7 +2729,7 @@ wcwidth = ">=0.1.4"
 
 [[package]]
 name = "protea-contracts"
-version = "1.7.0"
+version = "1.8.0"
 description = "Shared ABCs, payload schemas, feature registry contract and compute_schema_sha helper for the PROTEA stack."
 optional = false
 python-versions = ">=3.12,<4.0"
@@ -2745,8 +2745,8 @@ pydantic = ">=2.5"
 [package.source]
 type = "git"
 url = "https://github.com/frapercan/protea-contracts.git"
-reference = "f7008c90639c252dfcd674b22c20e8e406a7485d"
-resolved_reference = "f7008c90639c252dfcd674b22c20e8e406a7485d"
+reference = "90627e7813b2c6bbe328c64eda52933807e7c315"
+resolved_reference = "90627e7813b2c6bbe328c64eda52933807e7c315"
 
 [[package]]
 name = "psutil"
@@ -4520,4 +4520,4 @@ t5 = ["sentencepiece", "torch", "transformers"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "b700f67685a0e9f03e81c91b6e1a5f2d8729a60094045a0ba28312a5703f0ae1"
+content-hash = "ca727bf15af2b0ba0b1a56f2c5441c5fe3d3df4908f8cf4677cb941a7767da68"
