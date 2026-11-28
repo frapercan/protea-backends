@@ -21,7 +21,7 @@ Heavy ML deps (``torch``, ``esm``) are imported lazily; install the
 runtime stack with ``pip install protea-backends[esm3c]`` (extras
 land in F2A.5 of master plan v3).
 
-Three output paths:
+Four output paths:
 
 * :meth:`EsmcBackend.embed_batch` returns the historical ``(B, D)``
   mean-pooled ``float16`` matrix.
@@ -38,6 +38,9 @@ Three output paths:
   dispatches to it from ``compute_embeddings._dispatch_embed``. The
   ``tokenizer`` argument is accepted for signature parity with the
   other plugins and is ignored (ESM-C has no tokenizer object).
+* :meth:`EsmcBackend.embed_chunks_padded` returns the same output from
+  ONE padded forward pass over the whole batch, the throughput path for
+  a bank computed on a large card.
 
 Example::
 
@@ -234,6 +237,23 @@ class EsmcBackend(EmbeddingBackend):
         del tokenizer  # ESM-C has no tokenizer.
         return embed_chunks_esm3c(model, sequences, config, device)
 
+    def embed_chunks_padded(
+        self,
+        model: Any,
+        tokenizer: Any,
+        sequences: list[str],
+        config: Any,
+        device: str,
+    ) -> list[list[ChunkEmbedding]]:
+        """Embed ``sequences`` in ONE padded forward pass; PROTEA's chunked output.
+
+        The throughput counterpart of :meth:`embed_chunks`, which runs one
+        sequence per pass. See :func:`embed_chunks_esm3c_padded`.
+        ``tokenizer`` is ignored, as there.
+        """
+        del tokenizer  # ESM-C has no tokenizer.
+        return embed_chunks_esm3c_padded(model, sequences, config, device)
+
     def _compute_residue_tensors(
         self,
         model: Any,
@@ -360,7 +380,6 @@ def _embed_chunks_one(
     positions ``1:-1``.
     """
     import torch
-    import torch.nn.functional as F  # noqa: N812  PyTorch convention
     from esm.sdk.api import ESMProtein, LogitsConfig
 
     protein = ESMProtein(sequence=seq_str[: config.max_length])
@@ -375,6 +394,71 @@ def _embed_chunks_one(
             LogitsConfig(sequence=True, return_hidden_states=True),
         )
 
+    hs = _layers_of(logits_output, seq_str)
+    chunks = _reduce_row(hs, config, seq_str, row=0, n_tokens=None)
+    del logits_output, hs
+    torch.cuda.empty_cache()
+    return chunks
+
+
+def embed_chunks_esm3c_padded(
+    model: Any,
+    sequences: list[str],
+    config: Any,
+    device: str,
+) -> list[list[ChunkEmbedding]]:
+    """ONE padded forward pass over ``sequences``, reduced row by row.
+
+    Each sequence is cut to ``config.max_length`` and encoded exactly as
+    :func:`_embed_chunks_one` encodes it (``model.encode``), the token rows are
+    padded on the right with the tokeniser's pad id, and ``model.logits`` runs
+    once on the batch, under the same autocast. ESM-C's forward masks attention
+    by ``tokens != pad``, so a padded position never reaches a real one, and
+    every row goes through :func:`_reduce_row`, the reduction the one-sequence
+    path uses, bounded by that row's own token count. A row's vector therefore
+    differs from the one-sequence pass by floating-point rounding (the kernels
+    see other shapes), never by anything a padded position contributes.
+
+    ``_BatchedESMProteinTensor`` is the type ``model.logits`` converts a single
+    protein into before its forward; handing it a batch is the same call. The
+    caller sizes the batch (length-sorted, under a token budget).
+    """
+    if not sequences:
+        return []
+    import torch
+    from esm.sdk.api import ESMProtein, LogitsConfig
+    from esm.utils.sampling import _BatchedESMProteinTensor
+
+    device_obj = torch.device(device) if isinstance(device, str) else device
+    with torch.no_grad(), torch.autocast(
+        device_type=device_obj.type,
+        dtype=torch.float16,
+        enabled=(device_obj.type == "cuda"),
+    ):
+        rows = [
+            model.encode(ESMProtein(sequence=s[: config.max_length])).sequence for s in sequences
+        ]
+        lengths = [int(r.shape[0]) for r in rows]
+        tokens = torch.nn.utils.rnn.pad_sequence(
+            rows, batch_first=True, padding_value=model.tokenizer.pad_token_id
+        )
+        logits_output = model.logits(
+            _BatchedESMProteinTensor(sequence=tokens),
+            LogitsConfig(sequence=True, return_hidden_states=True),
+        )
+    hs = _layers_of(logits_output, sequences[0])
+    out = [
+        _reduce_row(hs, config, seq_str, row=row, n_tokens=lengths[row])
+        for row, seq_str in enumerate(sequences)
+    ]
+    del logits_output, hs
+    return out
+
+
+def _layers_of(logits_output: Any, seq_str: str) -> list[Any]:
+    """The SDK's hidden states as a list of ``(B, L, D)`` layer tensors."""
+    import torch
+
     hs = logits_output.hidden_states
     if hs is None:
         raise RuntimeError(
@@ -382,25 +466,40 @@ def _embed_chunks_one(
         )
     if isinstance(hs, torch.Tensor):
         hs = [hs[i] for i in range(hs.shape[0])]
+    return list(hs)
+
+
+def _reduce_row(
+    hs: list[Any],
+    config: Any,
+    seq_str: str,
+    *,
+    row: int,
+    n_tokens: int | None,
+) -> list[ChunkEmbedding]:
+    """Select layers, aggregate and pool one row of one pass.
+
+    The reduction both paths run, lifted out of :func:`_embed_chunks_one`. CLS
+    pooling reads position 0 of each selected layer; residue pooling strips BOS
+    and EOS, reading ``1 : n_tokens - 1`` of the row, where ``n_tokens`` is the
+    row's own token count (BOS, residues, EOS) in a padded pass, and ``None``
+    in a one-sequence pass, whose row ends at its EOS (``1:-1``).
+    """
+    import torch.nn.functional as F  # noqa: N812  PyTorch convention
 
     valid_layers = validate_layers(config.layer_indices, hs, "ESM3c", seq_str[:20])
-
     if config.pooling == "cls":
-        layer_tensors_1d = [hs[-(li + 1)][0, 0, :].float() for li in valid_layers]
+        layer_tensors_1d = [hs[-(li + 1)][row, 0, :].float() for li in valid_layers]
         pooled = aggregate_layers(layer_tensors_1d, config.layer_agg)
         if config.normalize:
             pooled = F.normalize(pooled.unsqueeze(0), p=2, dim=1).squeeze(0)
-        chunks = [ChunkEmbedding(0, None, pooled.cpu().numpy())]
-    else:
-        layer_tensors_2d = [hs[-(li + 1)][0, 1:-1, :].float() for li in valid_layers]
-        residues = aggregate_layers(layer_tensors_2d, config.layer_agg)
-        if config.normalize_residues:
-            residues = F.normalize(residues, p=2, dim=1)
-        chunks = chunk_and_pool(residues, config)
-
-    del logits_output, hs
-    torch.cuda.empty_cache()
-    return chunks
+        return [ChunkEmbedding(0, None, pooled.cpu().numpy())]
+    end = -1 if n_tokens is None else n_tokens - 1
+    layer_tensors_2d = [hs[-(li + 1)][row, 1:end, :].float() for li in valid_layers]
+    residues = aggregate_layers(layer_tensors_2d, config.layer_agg)
+    if config.normalize_residues:
+        residues = F.normalize(residues, p=2, dim=1)
+    return chunk_and_pool(residues, config)
 
 
 #: Module-level plugin instance discovered via the
